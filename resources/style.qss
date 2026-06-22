@@ -1,0 +1,259 @@
+/* ═══════════════════════════════════════════════════════════════
+   ND2 显微镜浏览器 — White-dominant clean theme
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Global ──────────────────────────────────────────────────── */
+QMainWindow {
+    background: #FFFFFF;
+}
+
+QWidget {
+    font-family: -apple-system, "Helvetica Neue", "SF Pro Text", "Segoe UI", "Microsoft YaHei", sans-serif;
+    color: #333333;
+}
+
+/* ── Menu Bar ────────────────────────────────────────────────── */
+QMenuBar {
+    background: #F5F5F5;
+    border-bottom: 1px solid #E0E0E0;
+    padding: 2px 0px;
+    font-size: 13px;
+}
+
+QMenuBar::item {
+    padding: 4px 12px;
+    border-radius: 4px;
+}
+
+QMenuBar::item:selected {
+    background: #E8E8E8;
+}
+
+QMenu {
+    background: #FFFFFF;
+    border: 1px solid #D0D0D0;
+    border-radius: 6px;
+    padding: 4px;
+}
+
+QMenu::item {
+    padding: 6px 24px;
+    border-radius: 4px;
+}
+
+QMenu::item:selected {
+    background: #007AFF;
+    color: #FFFFFF;
+}
+
+QMenu::separator {
+    height: 1px;
+    background: #E5E5E5;
+    margin: 4px 8px;
+}
+
+/* ── Status Bar ──────────────────────────────────────────────── */
+QStatusBar {
+    background: #FAFAFA;
+    border-top: 1px solid #E0E0E0;
+    font-size: 13px;
+    padding: 2px 12px;
+    color: #666666;
+}
+
+/* ── Splitter ────────────────────────────────────────────────── */
+QSplitter::handle {
+    background: #E5E5E5;
+    width: 1px;
+}
+
+/* ── Scroll Bars ─────────────────────────────────────────────── */
+QScrollBar:vertical {
+    background: transparent;
+    width: 8px;
+    margin: 0;
+}
+
+QScrollBar::handle:vertical {
+    background: #C8C8C8;
+    border-radius: 4px;
+    min-height: 30px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: #AAAAAA;
+}
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+
+QScrollBar:horizontal {
+    background: transparent;
+    height: 8px;
+    margin: 0;
+}
+
+QScrollBar::handle:horizontal {
+    background: #C8C8C8;
+    border-radius: 4px;
+    min-width: 30px;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background: #AAAAAA;
+}
+
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal {
+    width: 0px;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────── */
+#sidebarTitle { background: #FAFAFA; border-bottom: 1px solid #E0E0E0; }
+#sidebarTitleLabel { font-size: 13px; font-weight: 600; color: #333; }
+#sidebarRefreshBtn { background: transparent; border: none; font-size: 14px; color: #888; }
+#sidebarRefreshBtn:hover { background: #E8E8E8; border-radius: 4px; }
+#searchContainer { background: #FFFFFF; border-bottom: 1px solid #E0E0E0; }
+#searchInput { border: 1px solid #D0D0D0; border-radius: 6px; padding: 6px 10px; font-size: 13px; background: #F5F5F5; color: #333; }
+#searchInput:focus { border-color: #007AFF; background: #FFFFFF; }
+#fileTree { background: #FFFFFF; border: none; font-size: 13px; color: #333; }
+#fileTree::item { padding: 5px 4px; border-bottom: 1px solid #F0F0F0; }
+#fileTree::item:selected { background: #007AFF; color: #fff; }
+#fileTree::branch { background: #FAFAFA; font-weight: 600; }
+#scanIndicator { background: #FFF3CD; color: #664D03; font-size: 13px; padding: 4px; }
+#sidebarFooter { background: #FAFAFA; border-top: 1px solid #E0E0E0; font-size: 11px; color: #888; }
+
+/* ── Viewer Bar ───────────────────────────────────────────────── */
+#viewerBar { background: #F0F0F0; }
+
+/* ── Controls Widget ─────────────────────────────────────────── */
+#controlsWidget {
+    background: #FAFAFA;
+    border-top: 1px solid #E0E0E0;
+}
+
+#controlLabel {
+    font-size: 13px;
+    font-weight: 500;
+    color: #555555;
+}
+
+#valueLabel {
+    font-size: 11px;
+    color: #888888;
+}
+
+/* Merge button */
+#mergeBtn {
+    background: #F0F0F0;
+    border: 2px solid #CCCCCC;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #555;
+}
+
+#mergeBtn:checked {
+    background: #007AFF;
+    border-color: #007AFF;
+    color: #FFFFFF;
+}
+
+#mergeBtn:hover {
+    background: #E0E0E0;
+}
+
+#mergeBtn:checked:hover {
+    background: #0066D6;
+}
+
+/* Reset & Export buttons */
+#resetBtn {
+    background: #F5F5F5;
+    border: 1px solid #D0D0D0;
+    border-radius: 4px;
+    font-size: 11px;
+    color: #666;
+}
+
+#resetBtn:hover {
+    background: #E8E8E8;
+}
+
+#exportBtn {
+    background: #007AFF;
+    border: 1px solid #007AFF;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #FFFFFF;
+}
+
+#exportBtn:hover {
+    background: #0066D6;
+}
+
+/* ── Sliders ─────────────────────────────────────────────────── */
+QSlider::groove:horizontal {
+    background: #E0E0E0;
+    height: 4px;
+    border-radius: 2px;
+}
+
+QSlider::handle:horizontal {
+    background: #FFFFFF;
+    border: 2px solid #007AFF;
+    width: 14px;
+    height: 14px;
+    margin: -6px 0;
+    border-radius: 7px;
+}
+
+QSlider::handle:horizontal:hover {
+    background: #007AFF;
+}
+
+QSlider::sub-page:horizontal {
+    background: #007AFF44;
+    border-radius: 2px;
+}
+
+/* ── Viewer ──────────────────────────────────────────────────── */
+#viewerWidget {
+    background: #F0F0F0;
+}
+
+/* ── Tool Tips ───────────────────────────────────────────────── */
+QToolTip {
+    background: #333333;
+    color: #FFFFFF;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 11px;
+}
+
+/* ── Message Box ─────────────────────────────────────────────── */
+QMessageBox {
+    background: #FFFFFF;
+}
+
+QMessageBox QLabel {
+    font-size: 13px;
+    color: #333;
+}
+
+QMessageBox QPushButton {
+    background: #007AFF;
+    color: #FFFFFF;
+    border: none;
+    border-radius: 4px;
+    padding: 6px 20px;
+    font-size: 13px;
+}
+
+QMessageBox QPushButton:hover {
+    background: #0066D6;
+}
