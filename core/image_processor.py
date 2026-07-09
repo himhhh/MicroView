@@ -324,3 +324,144 @@ def get_all_channels(
 extract_channel_display = get_channel_display
 create_merge_rgb = get_merge_display
 apply_adjustments_8bit = apply_bc
+
+
+# ── Scale bar ───────────────────────────────────────────────────
+
+def draw_scale_bar(rgb: np.ndarray, pixel_size_um: float,
+                   bar_um: float = None, color: str = 'white',
+                   position: str = 'br', thickness: int = 5,
+                   font_size: int = 30, show_label: bool = True,
+                   style: str = 'line_text', font_family: str = '') -> np.ndarray:
+    """Draw a scale bar on an RGB uint8 image using PIL.
+
+    Args:
+        rgb: uint8 (H, W, 3) image.
+        pixel_size_um: microns per pixel.
+        bar_um: bar length in µm (auto-chosen if 0 or None).
+        color: 'white' or 'black'.
+        position: 'tl'|'tr'|'bl'|'br'.
+        thickness: bar line thickness in px.
+        font_size: label font size.
+        show_label: whether to draw the text label.
+        style: 'line_text' | 'filled' | 'line_only'.
+        font_family: font family name (uses system default if empty).
+    Returns:
+        Copy of rgb with scale bar drawn.
+    """
+    from PIL import Image, ImageDraw, ImageFont as _IF
+
+    h, w = rgb.shape[:2]
+    img = Image.fromarray(rgb)
+    draw = ImageDraw.Draw(img)
+
+    if not bar_um or bar_um <= 0:
+        # Auto-pick bar length ~12% of image width, rounded to nice value
+        target_px = w * 0.12
+        nice = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]
+        bar_px_candidates = [u / pixel_size_um for u in nice]
+        bar_um = nice[0]
+        for i, bp in enumerate(bar_px_candidates):
+            if bp >= target_px * 0.6:
+                bar_um = nice[i]
+                break
+
+    bar_px = int(bar_um / pixel_size_um)
+    if bar_px > w * 0.9:
+        bar_px = int(w * 0.9)
+
+    # Position — layout: text on top, bar line below
+    margin = max(12, int(min(w, h) * 0.03))
+    gap = 4  # px between text and bar
+    text_h = font_size + 2 if show_label else 0
+    total_h = text_h + gap + (thickness if style == 'filled' else thickness) if show_label else thickness
+    if style == 'filled' and show_label:
+        # filled bar covers text area too
+        total_h = text_h + thickness + gap
+        bar_top = text_h + gap
+    elif style == 'filled':
+        total_h = thickness
+        bar_top = 0
+    elif show_label:
+        total_h = text_h + gap + thickness
+        bar_top = text_h + gap
+    else:
+        total_h = thickness
+        bar_top = 0
+
+    is_bottom = position[0] == 'b'
+    if is_bottom:
+        y0 = h - margin - total_h
+    else:
+        y0 = margin
+
+    positions = {
+        'bl': (margin, h - margin - total_h),
+        'br': (w - margin - bar_px, h - margin - total_h),
+        'tl': (margin, margin),
+        'tr': (w - margin - bar_px, margin),
+    }
+    x0, y0 = positions.get(position, positions['br'])
+
+    _color_map = {'white': (255,255,255), 'black': (0,0,0),
+                  'red': (255,0,0), 'yellow': (255,255,0)}
+    fg = _color_map.get(color, (255,255,255))
+    bg = (0, 0, 0) if color in ('white', 'yellow') else (255, 255, 255)
+
+    # Bar
+    if style == 'filled':
+        # Filled rectangle, text overlaid on top portion
+        draw.rectangle([x0, y0, x0 + bar_px, y0 + total_h], fill=fg)
+        text_color = bg
+        label_y = y0 + 2
+    else:
+        # Line, text above
+        bar_y = y0 + bar_top
+        draw.rectangle([x0, bar_y, x0 + bar_px, bar_y + thickness], fill=fg)
+        text_color = fg
+        label_y = y0
+
+    # Label
+    if show_label and style != 'line_only':
+        font = _IF.load_default()
+        if font_family:
+            loaded = False
+            # Try the family name directly (works on macOS for common fonts)
+            for name in [font_family, font_family.replace(' ', '')]:
+                try:
+                    font = _IF.truetype(name, font_size)
+                    loaded = True
+                    break
+                except (OSError, IOError):
+                    continue
+            # Try common font paths
+            if not loaded:
+                import platform
+                _paths = ['/System/Library/Fonts/', '/Library/Fonts/',
+                          'C:\\Windows\\Fonts\\']
+                _exts = ['.ttc', '.ttf', '.otf']
+                for _p in _paths:
+                    for _e in _exts:
+                        _fp = _p + font_family + _e
+                        try:
+                            font = _IF.truetype(_fp, font_size)
+                            loaded = True
+                            break
+                        except (OSError, IOError):
+                            continue
+                    if loaded:
+                        break
+        if font.getname()[0] == 'DejaVu Sans':  # still PIL default
+            for try_font in ['Helvetica', 'Arial']:
+                try:
+                    font = _IF.truetype(try_font, font_size)
+                    break
+                except (OSError, IOError):
+                    continue
+        label = f"{bar_um} µm" if bar_um >= 1 else f"{bar_um*1000:.0f} nm"
+        bbox = draw.textbbox((0, 0), label, font=font)
+        tw = bbox[2] - bbox[0]
+        tx = x0 + (bar_px - tw) / 2
+        draw.text((tx, label_y), label, fill=text_color, font=font)
+
+    return np.array(img)

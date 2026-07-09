@@ -75,7 +75,6 @@ class MainWindow(QMainWindow):
         self._render_timer.setInterval(30)  # 30ms debounce
         self._render_timer.timeout.connect(self._do_render)
         self.settings = QSettings("MicroView", "MicroView")
-        self.dark_mode = self.settings.value("dark_mode", True, type=bool)
         self.scan_worker: ScanWorker | None = None
 
         # Window properties
@@ -91,9 +90,7 @@ class MainWindow(QMainWindow):
         self._setup_central_widget()
         self._setup_status_bar()
 
-        # Apply dark/light mode to child widgets
-        self.viewer.set_dark_mode(self.dark_mode)
-        self.controls.set_dark_mode(self.dark_mode)
+        # Viewer and controls default to dark mode
 
         # No auto-scan on startup — user opens folder manually
         self._update_status("就绪 — 请打开包含 ND2 或 LIF 文件的文件夹")
@@ -101,14 +98,13 @@ class MainWindow(QMainWindow):
     # ── stylesheet ──────────────────────────────────────────────
 
     def _load_stylesheet(self):
-        """Load and apply the QSS stylesheet based on current theme."""
-        style_name = "style_dark.qss" if self.dark_mode else "style.qss"
+        """Load and apply the dark QSS stylesheet."""
         possible_paths = [
-            Path(__file__).parent.parent / "resources" / style_name,
-            Path(os.path.dirname(os.path.abspath(__file__))).parent / "resources" / style_name,
+            Path(__file__).parent.parent / "resources" / "style_dark.qss",
+            Path(os.path.dirname(os.path.abspath(__file__))).parent / "resources" / "style_dark.qss",
         ]
         if getattr(sys, 'frozen', False):
-            possible_paths.insert(0, Path(sys._MEIPASS) / "resources" / style_name)
+            possible_paths.insert(0, Path(sys._MEIPASS) / "resources" / "style_dark.qss")
 
         for qss_path in possible_paths:
             if qss_path.exists():
@@ -116,38 +112,44 @@ class MainWindow(QMainWindow):
                     self.setStyleSheet(f.read())
                 return
 
-        bg = "#1e1e1e" if self.dark_mode else "#FFFFFF"
-        mg = "#2d2d2d" if self.dark_mode else "#F5F5F5"
-        sb = "#252525" if self.dark_mode else "#FAFAFA"
-        self.setStyleSheet(f"QMainWindow{{background:{bg};}} QMenuBar{{background:{mg};}} QStatusBar{{background:{sb};}}")
-
-    def toggle_dark_mode(self):
-        """Switch between light and dark theme."""
-        self.dark_mode = not self.dark_mode
-        self.settings.setValue("dark_mode", self.dark_mode)
-        self.dark_mode_action.setChecked(self.dark_mode)
-        self._load_stylesheet()
-        self.viewer.set_dark_mode(self.dark_mode)
-        self.controls.set_dark_mode(self.dark_mode)
+        self.setStyleSheet("QMainWindow{background:#1e1e1e;} QMenuBar{background:#2d2d2d;} QStatusBar{background:#252525;}")
 
     def _on_settings(self):
         """Open channel color settings dialog."""
         from .settings_dialog import ColorSettingsDialog
         dlg = ColorSettingsDialog(self._dlg_colors, self)
+        # Show current file's pixel size — always read directly from file
+        # (scanner cache may contain stale/incorrect values)
+        px = None
+        if self.current_filepath:
+            try:
+                entry = self.file_index.get(self.current_filepath, {})
+                lif_idx = entry.get('lif_image_index', -1)
+                if lif_idx >= 0:
+                    from core.lif_reader import read_lif_metadata
+                    real_fp = entry.get('filepath', self.current_filepath)
+                    metas = read_lif_metadata(real_fp)
+                    if lif_idx < len(metas):
+                        px = metas[lif_idx].pixel_size_um
+                else:
+                    from core.nd2_reader import read_metadata
+                    fp = entry.get('filepath', self.current_filepath)
+                    meta = read_metadata(fp)
+                    if meta:
+                        px = meta.pixel_size_um
+            except Exception:
+                pass
+        dlg.set_pixel_size_info(px)
         if dlg.exec() == QDialog.Accepted:
             if self.current_raw_data is not None:
                 self._display_all()
                 # Refresh control button colours after settings change
-                self.controls.set_dark_mode(self.dark_mode)
+                self.controls.set_dark_mode(True)
 
     def _dlg_colors(self):
-        """Return (bg, text, btn_bg, btn_text, tree_bg, header_bg, input_bg) for current mode."""
-        if self.dark_mode:
-            return ("#2d2d2d", "#CCC", "#3c3c3c", "#CCC",
-                    "#1e1e1e", "#2d2d2d", "#3c3c3c")
-        else:
-            return ("#FFFFFF", "#333", "#e8e8e8", "#333",
-                    "#FFFFFF", "#f0f0f0", "#FFFFFF")
+        """Return (bg, text, btn_bg, btn_text, tree_bg, header_bg, input_bg)."""
+        return ("#2d2d2d", "#CCC", "#3c3c3c", "#CCC",
+                "#1e1e1e", "#2d2d2d", "#3c3c3c")
 
     def _setup_menu_bar(self):
         menu_bar = self.menuBar()
@@ -172,19 +174,12 @@ class MainWindow(QMainWindow):
         quit_action.triggered.connect(self.close)
         file_menu.addAction(quit_action)
 
-        # View menu
-        view_menu = menu_bar.addMenu("视图(&V)")
-        self.dark_mode_action = QAction("暗黑模式", self)
-        self.dark_mode_action.setCheckable(True)
-        self.dark_mode_action.setChecked(self.dark_mode)
-        self.dark_mode_action.setShortcut(QKeySequence("Ctrl+D"))
-        self.dark_mode_action.triggered.connect(self.toggle_dark_mode)
-        view_menu.addAction(self.dark_mode_action)
-
-        view_menu.addSeparator()
-        settings_action = QAction("设置...", self)
+        # Settings menu
+        settings_menu = menu_bar.addMenu("设置(&S)")
+        settings_action = QAction("偏好设置...", self)
+        settings_action.setShortcut(QKeySequence("Ctrl+,"))
         settings_action.triggered.connect(self._on_settings)
-        view_menu.addAction(settings_action)
+        settings_menu.addAction(settings_action)
 
         # Help menu
         help_menu = menu_bar.addMenu("帮助(&H)")
@@ -222,6 +217,7 @@ class MainWindow(QMainWindow):
         self.controls.export_requested.connect(self._on_export)
         self.controls.export_channels_requested.connect(self._on_export_channels)
         self.controls.batch_export_requested.connect(self._on_batch_export)
+        self.controls.imagej_requested.connect(self._on_open_in_imagej)
         right_layout.addWidget(self.controls)
 
         # Splitter
@@ -511,10 +507,167 @@ class MainWindow(QMainWindow):
                             ci * (color[comp] / 255.0))
             merge = np.clip(rgb, 0, 255).astype(np.uint8)
 
+        # ── Scale bar (preview) ──
+        _s = QSettings("MicroView", "MicroView")
+        px_um = _s.value("scalebar_pixel_size_override", 0.0, type=float)
+        if not px_um or px_um <= 0:
+            px_um = self._get_pixel_size_um(entry)
+        _sp = _s.value("scalebar_preview", False, type=bool)
+        if _sp and px_um and px_um > 0:
+            from core.image_processor import draw_scale_bar as _dsb
+            _kw = self._scale_bar_kwargs()
+            merge = _dsb(merge, px_um, **_kw)
+            for ci in range(len(adj_channels)):
+                adj_channels[ci] = _dsb(adj_channels[ci], px_um, **_kw)
+
         self.viewer.display_image(merge, adj_channels, filtered_names, filtered_colors)
 
     def _on_channel_changed(self, channel: str | int):
         pass  # unused; kept for backward compat with controls signal
+
+    def _on_open_in_imagej(self):
+        """Open the current file in ImageJ/Fiji."""
+        if self.current_raw_data is None:
+            QMessageBox.information(self, "提示", "请先打开一个文件。")
+            return
+
+        s = QSettings("MicroView", "MicroView")
+        raw_path = s.value("imagej_path", "").rstrip('/')
+        open_mode = s.value("imagej_lif_mode", "完整文件")
+        apply_adj = s.value("imagej_apply_adjustments", True, type=bool)
+
+        if not raw_path:
+            QMessageBox.information(
+                self, "未配置 ImageJ",
+                "请先在 视图 → 设置 中配置 Fiji/ImageJ 路径。"
+            )
+            return
+
+        # Find .app bundle root (needed for 'open -a' on macOS)
+        app_bundle = raw_path
+        if '/Contents/MacOS/' in raw_path:
+            app_bundle = raw_path.split('/Contents/MacOS/')[0]
+
+        if not os.path.exists(app_bundle if app_bundle.endswith('.app') else raw_path):
+            QMessageBox.information(
+                self, "ImageJ 路径不存在",
+                f"找不到 ImageJ/Fiji，请检查设置中的路径：\n{raw_path}"
+            )
+            return
+
+        import sys as _sys
+        is_mac = _sys.platform == 'darwin'
+
+        entry = self.file_index.get(self.current_filepath, {})
+        real_fp = entry.get('filepath', self.current_filepath)
+        lif_idx = entry.get('lif_image_index', -1)
+
+        # ── Build base name (same pattern as batch export) ──
+        if lif_idx >= 0:
+            # LIF: {lif_stem}-{img_name}
+            lif_stem = os.path.splitext(os.path.basename(real_fp))[0]
+            fn = entry.get('filename', '')
+            if ' [' in fn:
+                img_name = fn.split(' [')[-1].rstrip(']')
+            elif '::' in (self.current_filepath or ''):
+                img_name = self.current_filepath.split('::')[-1]
+            else:
+                img_name = f"Image{lif_idx}"
+            base = f"{lif_stem}-{img_name}"
+        else:
+            # ND2: {stem}
+            base = os.path.splitext(os.path.basename(real_fp))[0]
+
+        files_to_open = []
+
+        # "完整文件" mode: pass the raw file directly (both ND2 and LIF)
+        if open_mode == "完整文件":
+            files_to_open.append(real_fp)
+        else:
+            import tempfile, numpy as np
+            from PIL import Image as PILImage
+            from core.image_processor import (
+                get_merge_display, get_channel_display, _detect_nch, normalize_to_8bit,
+            )
+            nch = _detect_nch(self.current_raw_data)
+            ch_names = entry.get('channel_names', [f"Ch{i+1}" for i in range(nch)])
+            enabled = self.controls.all_enabled()
+            blk = self.controls.all_black_points()
+            wht = self.controls.all_white_points()
+            br = self.controls.all_brightness()
+            ct = self.controls.all_contrast()
+
+            tmp_dir = tempfile.mkdtemp(prefix="microview_")
+
+            if open_mode in ("当前 Merge", "Merge + 所有通道"):
+                tp = os.path.join(tmp_dir, f"{base}_Merge.tif")
+                if apply_adj:
+                    merge = get_merge_display(
+                        self.current_raw_data,
+                        ch_black=blk, ch_white=wht,
+                        ch_brightness=br, ch_contrast=ct,
+                        channel_names=ch_names,
+                    )
+                else:
+                    merge = get_merge_display(self.current_raw_data, channel_names=ch_names)
+                PILImage.fromarray(merge).save(tp)
+                files_to_open.append(tp)
+
+            if open_mode in ("所有通道", "Merge + 所有通道"):
+                for ch in range(nch):
+                    if not enabled[ch]:
+                        continue
+                    cn = ch_names[ch] if ch < len(ch_names) else f"Ch{ch+1}"
+                    tp = os.path.join(tmp_dir, f"{base}_{cn}.tif")
+                    if apply_adj:
+                        img = get_channel_display(
+                            self.current_raw_data, channel=ch, colored=True,
+                            channel_name=cn,
+                            black_point=blk[ch] if ch < len(blk) else 0.0,
+                            white_point=wht[ch] if ch < len(wht) else 255.0,
+                            brightness=br[ch] if ch < len(br) else 0.0,
+                            contrast=ct[ch] if ch < len(ct) else 1.0,
+                        )
+                    else:
+                        ch2d = normalize_to_8bit(
+                            self._cached_norm[ch] if ch < len(self._cached_norm)
+                            else np.zeros((1, 1), dtype=np.uint8)
+                        )
+                        from core.image_processor import apply_lut, _guess_color
+                        img = apply_lut(ch2d, _guess_color(cn, ch))
+                    PILImage.fromarray(img).save(tp)
+                    files_to_open.append(tp)
+
+        if not files_to_open:
+            return
+
+        try:
+            import subprocess
+            if is_mac:
+                subprocess.Popen(['open', '-a', app_bundle] + files_to_open)
+            else:
+                # Windows: ImageJ.exe launcher uses ANSI API, garbles non-
+                # ASCII paths.  For raw files with Chinese paths, create a
+                # hardlink in the temp dir (ASCII path) and open that instead.
+                import tempfile as _tf, subprocess, shutil
+                _md = _tf.mkdtemp(prefix="microview_")
+                _to_open = []
+                for f in files_to_open:
+                    if f == real_fp:
+                        # Raw file with potentially Chinese path → hardlink
+                        ext = os.path.splitext(f)[1]
+                        _link = os.path.join(_md, f"_original{ext}")
+                        try:
+                            os.link(f, _link)
+                        except OSError:
+                            shutil.copy2(f, _link)
+                        _to_open.append(_link)
+                    else:
+                        _to_open.append(f)
+                subprocess.Popen([raw_path] + _to_open)
+            self._update_status(f"已在 ImageJ 中打开: {real_fp}")
+        except Exception as e:
+            QMessageBox.warning(self, "打开失败", f"无法启动 ImageJ:\n{e}")
 
     def _on_adjustment_changed(self):
         self._display_all()
@@ -557,7 +710,21 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "提示", "请先打开一个文件。")
             return
 
-        base = os.path.splitext(os.path.basename(self.current_filepath or "image"))[0]
+        entry = self.file_index.get(self.current_filepath, {})
+        real_fp = entry.get('filepath', self.current_filepath or 'image')
+        lif_idx = entry.get('lif_image_index', -1)
+        if lif_idx >= 0:
+            lif_stem = os.path.splitext(os.path.basename(real_fp))[0]
+            fn = entry.get('filename', '')
+            if ' [' in fn:
+                img_name = fn.split(' [')[-1].rstrip(']')
+            elif '::' in (self.current_filepath or ''):
+                img_name = (self.current_filepath or '').split('::')[-1]
+            else:
+                img_name = f"Image{lif_idx}"
+            base = f"{lif_stem}-{img_name}"
+        else:
+            base = os.path.splitext(os.path.basename(real_fp))[0]
         default_name = f"{base}_Merge.png"
         default_path = os.path.join(os.path.expanduser("~/Desktop"), default_name)
 
@@ -568,6 +735,55 @@ class MainWindow(QMainWindow):
         if not filepath:
             return
         self._save_merge(filepath)
+
+    def _get_pixel_size_um(self, entry):
+        """Read pixel_size_um directly from file (bypass stale cache)."""
+        from core.nd2_reader import read_metadata
+        from core.lif_reader import read_lif_metadata
+        try:
+            lif_idx = entry.get('lif_image_index', -1)
+            if lif_idx >= 0:
+                real_fp = entry.get('filepath', '')
+                metas = read_lif_metadata(real_fp)
+                if lif_idx < len(metas):
+                    return metas[lif_idx].pixel_size_um
+            else:
+                fp = entry.get('filepath', '')
+                meta = read_metadata(fp)
+                if meta:
+                    return meta.pixel_size_um
+        except Exception:
+            pass
+        return entry.get('pixel_size_um')  # fallback to cache
+
+    def _scale_bar_kwargs(self):
+        """Return kwargs dict for draw_scale_bar from current QSettings."""
+        s = QSettings("MicroView", "MicroView")
+        return dict(
+            color=s.value("scalebar_color", "white"),
+            position=s.value("scalebar_position", "br"),
+            style=s.value("scalebar_style", "line_text"),
+            bar_um=s.value("scalebar_length_um", 0, type=int),
+            thickness=s.value("scalebar_thickness", 5, type=int),
+            font_size=s.value("scalebar_font_size", 30, type=int),
+            show_label=s.value("scalebar_show_label", True, type=bool),
+            font_family=s.value("scalebar_font_family", "Times New Roman"),
+        )
+
+    def _apply_scale_bar(self, img, entry, silent=False):
+        """Apply scale bar to an export image if enabled in settings."""
+        s = QSettings("MicroView", "MicroView")
+        if not s.value("scalebar_export", True, type=bool):
+            return img
+        px_um = s.value("scalebar_pixel_size_override", 0.0, type=float)
+        if not px_um or px_um <= 0:
+            px_um = self._get_pixel_size_um(entry)
+        if not px_um or px_um <= 0:
+            if not silent:
+                self._update_status("未找到像素标定数据，无法添加比例尺")
+            return img
+        from core.image_processor import draw_scale_bar as _dsb
+        return _dsb(img, px_um, **self._scale_bar_kwargs())
 
     def _save_merge(self, filepath: str):
         """Save merge image to filepath."""
@@ -582,6 +798,7 @@ class MainWindow(QMainWindow):
                                 ch_black=blk, ch_white=wht,
                                 ch_brightness=cb, ch_contrast=cc,
                                 channel_names=ch_names)
+        img = self._apply_scale_bar(img, entry)
         from PIL import Image
         os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
         Image.fromarray(img).save(filepath)
@@ -642,6 +859,13 @@ class MainWindow(QMainWindow):
         fmt_row.addWidget(fmt_combo)
         fmt_row.addStretch()
         ch_lay.addLayout(fmt_row)
+
+        # Scale bar checkbox (synced with settings)
+        sb_cb = QCheckBox("添加比例尺")
+        sb_cb.setChecked(QSettings("MicroView", "MicroView").value("scalebar_export", True, type=bool))
+        sb_cb.toggled.connect(lambda v: QSettings("MicroView", "MicroView").setValue("scalebar_export", v))
+        sb_cb.setStyleSheet(f"color:{C[1]};")
+        ch_lay.addWidget(sb_cb)
 
         # Buttons
         btn_row = QHBoxLayout()
@@ -711,6 +935,7 @@ class MainWindow(QMainWindow):
                                           ch_black=blk_vals, ch_white=wht_vals,
                                           ch_brightness=br_vals, ch_contrast=ct_vals,
                                           channel_names=channel_names)
+                merge = self._apply_scale_bar(merge, entry)
                 Image.fromarray(merge).save(merge_path, format=fmt)
                 count += 1
 
@@ -722,6 +947,7 @@ class MainWindow(QMainWindow):
                                              white_point=wht_vals[ch] if ch < len(wht_vals) else 255.0,
                                              brightness=br_vals[ch] if ch < len(br_vals) else 0.0,
                                              contrast=ct_vals[ch] if ch < len(ct_vals) else 1.0)
+                ch_img = self._apply_scale_bar(ch_img, entry)
                 ch_path = os.path.join(folder, f"{base}_{ch_name}{ext}")
                 Image.fromarray(ch_img).save(ch_path, format=fmt)
                 count += 1
@@ -769,6 +995,13 @@ class MainWindow(QMainWindow):
         fmt_combo.setStyleSheet(f"QComboBox{{background:{C[6]};color:{C[1]};border:1px solid #999;border-radius:3px;padding:4px 10px;font-size:13px;}} QComboBox:hover{{background:{C[2]};}} QComboBox QAbstractItemView{{background:{C[0]};color:{C[1]};selection-background-color:#007AFF;padding:4px;}}")
         top_row.addWidget(fmt_combo)
         layout.addLayout(top_row)
+
+        # Scale bar toggle
+        sb_cb = QCheckBox("添加比例尺")
+        sb_cb.setChecked(QSettings("MicroView", "MicroView").value("scalebar_export", True, type=bool))
+        sb_cb.toggled.connect(lambda v: QSettings("MicroView", "MicroView").setValue("scalebar_export", v))
+        sb_cb.setStyleSheet(f"color:{C[1]};")
+        layout.addWidget(sb_cb)
 
         # ── Row 1: Dynamic channel filter ──
         ch_filter_group = QGroupBox("通道过滤 (仅导出勾选的通道)")
@@ -1032,6 +1265,7 @@ class MainWindow(QMainWindow):
                         merge = get_merge_display(raw, ch_black=_blk_vals, ch_white=_wht_vals,
                                                   ch_brightness=_br_vals, ch_contrast=_ct_vals,
                                                   channel_names=ch_names)
+                        merge = self._apply_scale_bar(merge, entry)
                         Image.fromarray(merge).save(merge_path, format=fmt)
                         exported.append(merge_path)
 
@@ -1046,6 +1280,7 @@ class MainWindow(QMainWindow):
                                                   white_point=_wht_vals[ch] if ch < len(_wht_vals) else 255.0,
                                                   brightness=_br_vals[ch] if ch < len(_br_vals) else 0.0,
                                                   contrast=_ct_vals[ch] if ch < len(_ct_vals) else 1.0)
+                        img = self._apply_scale_bar(img, entry)
                         Image.fromarray(img).save(ch_path, format=fmt)
                         exported.append(ch_path)
                 except Exception as e:

@@ -16,6 +16,7 @@ class LIFMetadata:
     width: int = 0
     height: int = 0
     z_slices: int = 1
+    pixel_size_um: Optional[float] = None
 
 
 def read_lif_metadata(filepath: str | Path) -> list[LIFMetadata]:
@@ -45,6 +46,12 @@ def read_lif_metadata(filepath: str | Path) -> list[LIFMetadata]:
                 nz = dims.z if hasattr(dims, 'z') else 1
                 nch = getattr(img, 'channels', 1) or 1
 
+                # Extract pixel size from readlif scale (px/µm → µm/px)
+                scale = getattr(img, 'scale', None)
+                px_um = None
+                if scale and scale[0] and scale[0] > 0:
+                    px_um = 1.0 / float(scale[0])
+
                 # Use LUTName if present, fall back to generic Ch{i+1}
                 img_lut_names = all_lut_names[lut_idx:lut_idx + nch]
                 lut_idx += nch
@@ -59,6 +66,7 @@ def read_lif_metadata(filepath: str | Path) -> list[LIFMetadata]:
                     image_name=getattr(img, 'name', f'Image_{len(results)}'),
                     acquisition_date=date, channel_count=nch,
                     channel_names=ch_names, width=w, height=h, z_slices=nz,
+                    pixel_size_um=px_um,
                 )
                 results.append(meta)
             except Exception as e:

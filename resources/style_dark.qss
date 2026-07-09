@@ -91,3 +91,5 @@ QListWidget::item:selected { background: #007AFF; color: #fff; }
 QCheckBox { color: #ccc; }
 QDialogButtonBox QPushButton { background: #3c3c3c; border: 1px solid #555; border-radius: 4px; padding: 4px 16px; color: #ccc; }
 QDialogButtonBox QPushButton:hover { background: #4a4a4a; }
+
+

@@ -134,7 +134,7 @@ def scan_folder(
                         'channel_count': lif_meta.channel_count,
                         'channel_names': lif_meta.channel_names,
                         'width': lif_meta.width, 'height': lif_meta.height,
-                        'z_slices': lif_meta.z_slices, 'pixel_size_um': None, '_idx_key': key,
+                        'z_slices': lif_meta.z_slices, 'pixel_size_um': lif_meta.pixel_size_um, '_idx_key': key,
                     }
                     cache[key] = {**entry, '_mtime': mtime}
                     result[key] = entry

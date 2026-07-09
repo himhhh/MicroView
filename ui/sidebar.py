@@ -32,11 +32,6 @@ class SidebarWidget(QWidget):
         tlabel = QLabel("📁 文件浏览")
         tlabel.setObjectName("sidebarTitleLabel")
         tl.addWidget(tlabel)
-        refresh = QPushButton("🔄")
-        refresh.setFixedSize(28, 28)
-        refresh.setToolTip("Refresh")
-        refresh.setObjectName("sidebarRefreshBtn")
-        tl.addWidget(refresh, alignment=Qt.AlignRight)
         layout.addWidget(title)
 
         self.tree = QTreeWidget()
@@ -172,10 +167,14 @@ class SidebarWidget(QWidget):
         find(self.tree.invisibleRootItem())
 
     def _remove_folder(self, item):
-        """Remove a root folder node."""
-        idx = self.tree.indexOfTopLevelItem(item)
-        if idx >= 0:
-            self.tree.takeTopLevelItem(idx)
+        """Remove a folder node (root or sub-folder)."""
+        parent = item.parent()
+        if parent is None:
+            idx = self.tree.indexOfTopLevelItem(item)
+            if idx >= 0:
+                self.tree.takeTopLevelItem(idx)
+        else:
+            parent.removeChild(item)
         self._update_footer()
 
     def _count_all(self, node: dict) -> int:
@@ -195,25 +194,48 @@ class SidebarWidget(QWidget):
         if item is None: return
         fp = item.data(0, Qt.UserRole + 1)
         key = item.data(0, Qt.UserRole)
-        # Root folder nodes: offer "close folder"
-        if key == "__folder__" and item.parent() is None:
-            menu = QMenu(self)
-            close = menu.addAction("关闭文件夹")
-            reveal = menu.addAction("在 Finder 中显示")
+        menu = QMenu(self)
+        actions = {}
+
+        # ── Folder nodes (root or sub-folder) ──
+        if key == "__folder__":
+            actions["close"] = menu.addAction("关闭文件夹")
+            actions["reveal"] = menu.addAction("在 Finder 中显示")
             act = menu.exec(self.tree.viewport().mapToGlobal(pos))
-            if act == close:
+            if act == actions["close"]:
                 self._remove_folder(item)
-            elif act == reveal:
+            elif act == actions["reveal"]:
                 import subprocess, sys as _sys
                 fp2 = item.toolTip(0) or ''
                 if fp2:
                     if _sys.platform == 'darwin': subprocess.run(['open', '-R', fp2])
                     else: subprocess.run(['explorer', '/select,', fp2])
             return
-        if not fp or key in ("__folder__", "__lif_container__", None): return
-        menu = QMenu(self)
-        reveal = menu.addAction("在 Finder 中显示")
-        if menu.exec(self.tree.viewport().mapToGlobal(pos)) == reveal:
+
+        # ── LIF container nodes ──
+        if key == "__lif_container__":
+            if item.isExpanded():
+                actions["collapse"] = menu.addAction("折叠")
+            else:
+                actions["expand"] = menu.addAction("展开")
+            actions["reveal"] = menu.addAction("在 Finder 中显示")
+            act = menu.exec(self.tree.viewport().mapToGlobal(pos))
+            if act == actions.get("collapse"):
+                item.setExpanded(False)
+            elif act == actions.get("expand"):
+                item.setExpanded(True)
+            elif act == actions.get("reveal"):
+                import subprocess, sys as _sys
+                fp2 = item.toolTip(0) or ''
+                if fp2:
+                    if _sys.platform == 'darwin': subprocess.run(['open', '-R', fp2])
+                    else: subprocess.run(['explorer', '/select,', fp2])
+            return
+
+        # ── File items ──
+        if not fp: return
+        actions["reveal"] = menu.addAction("在 Finder 中显示")
+        if menu.exec(self.tree.viewport().mapToGlobal(pos)) == actions["reveal"]:
             import subprocess, sys as _sys
             if _sys.platform == 'darwin':
                 subprocess.run(['open', '-R', fp])

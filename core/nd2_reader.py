@@ -73,13 +73,37 @@ def read_metadata(filepath: str | Path) -> Optional[ND2Metadata]:
             except Exception:
                 meta.channel_names = [f"Channel {i+1}" for i in range(meta.channel_count)]
 
-            # Pixel size
+            # Pixel size — try multiple sources (nd2 library evolved)
             try:
-                cal = f.metadata.calibration
-                if cal and hasattr(cal, 'x'):
-                    meta.pixel_size_um = cal.x
+                vs = f.voxel_size()  # VoxelSize(x, y, z) in µm
+                if vs and hasattr(vs, 'x') and vs.x and vs.x > 0:
+                    meta.pixel_size_um = float(vs.x)
+                elif vs and len(vs) >= 3 and vs[0] and vs[0] > 0:
+                    meta.pixel_size_um = float(vs[0])
             except Exception:
                 pass
+            if meta.pixel_size_um is None:
+                try:
+                    # Older nd2 API
+                    cal = f.metadata.calibration
+                    if cal and hasattr(cal, 'x') and cal.x:
+                        meta.pixel_size_um = float(cal.x)
+                except Exception:
+                    pass
+            if meta.pixel_size_um is None:
+                try:
+                    # ome_metadata fallback
+                    ome = f.ome_metadata
+                    if ome:
+                        import xml.etree.ElementTree as ET
+                        root = ET.fromstring(ome) if isinstance(ome, str) else ome
+                        ns = {'ome': 'http://www.openmicroscopy.org/Schemas/OME/2016-06'}
+                        px = root.find('.//ome:Pixels', ns)
+                        if px is not None:
+                            sx = px.get('PhysicalSizeX')
+                            if sx: meta.pixel_size_um = float(sx)
+                except Exception:
+                    pass
 
             return meta
 

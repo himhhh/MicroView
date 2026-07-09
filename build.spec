@@ -4,7 +4,6 @@ block_cipher = None
 PROJ = '/Users/jimmy/Downloads/Jimmy/files/vibe coding/nd2-browser'
 
 added_files = [
-    ('resources/style.qss', 'resources'),
     ('resources/style_dark.qss', 'resources'),
     # ui/ package — each file explicitly
     (f'{PROJ}/ui/__init__.py', 'ui'),

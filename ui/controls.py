@@ -22,6 +22,7 @@ class ControlsWidget(QWidget):
     export_channels_requested = Signal()    # export all channels
     batch_export_requested = Signal()       # batch export all files
     channel_toggle_changed = Signal()       # per-channel merge/grid toggle
+    imagej_requested = Signal()             # open current file in ImageJ/Fiji
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -208,6 +209,17 @@ class ControlsWidget(QWidget):
         reset_btn.setFixedSize(40, 22)
         reset_btn.clicked.connect(self._on_reset)
         row2.addWidget(reset_btn)
+
+        imagej_btn = QPushButton("🔬 ImageJ")
+        imagej_btn.setFixedSize(80, 22)
+        imagej_btn.setToolTip("在 ImageJ/Fiji 中打开当前文件")
+        imagej_btn.clicked.connect(lambda: self.imagej_requested.emit())
+        imagej_btn.setStyleSheet(
+            "QPushButton { background: #27AE60; border: 1px solid #27AE60; border-radius: 4px;"
+            "font-size: 10px; font-weight: 600; color: #FFF; }"
+            "QPushButton:hover { background: #1E8449; }"
+        )
+        row2.addWidget(imagej_btn)
 
         export_btn = QPushButton("💾 导出 Merge")
         export_btn.setObjectName("exportBtn")
