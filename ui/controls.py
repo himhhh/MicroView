@@ -22,6 +22,7 @@ class ControlsWidget(QWidget):
     export_channels_requested = Signal()    # export all channels
     batch_export_requested = Signal()       # batch export all files
     channel_toggle_changed = Signal()       # per-channel merge/grid toggle
+    global_apply_changed = Signal(bool)     # apply current display settings on file switch
     imagej_requested = Signal()             # open current file in ImageJ/Fiji
 
     def __init__(self, parent=None):
@@ -189,6 +190,11 @@ class ControlsWidget(QWidget):
         self._ch_checkbox_layout.setContentsMargins(0, 0, 0, 0)
         self._ch_checkbox_layout.setSpacing(8)
         row1b.addLayout(self._ch_checkbox_layout)
+
+        self.global_apply_cb = QCheckBox("应用到全局")
+        self.global_apply_cb.setToolTip("切换图片时，使用当前通道、LUT、亮度和对比度设置")
+        self.global_apply_cb.toggled.connect(self.global_apply_changed.emit)
+        row1b.addWidget(self.global_apply_cb)
 
         row1b.addStretch()
         main.addLayout(row1b)
@@ -500,6 +506,9 @@ class ControlsWidget(QWidget):
 
     def all_enabled(self) -> list[bool]:
         return list(self._per_channel_enabled)
+
+    def global_apply_enabled(self) -> bool:
+        return self.global_apply_cb.isChecked()
 
     def current_channel(self):
         return self._selected_ch

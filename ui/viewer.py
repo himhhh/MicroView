@@ -372,12 +372,18 @@ class ViewerWidget(QWidget):
 
     # ── display ──
 
-    def display_image(self, merge_rgb, channel_imgs, channel_names, channel_colors_hex=None):
+    def display_image(self, merge_rgb, channel_imgs, channel_names, channel_colors_hex=None,
+                      preserve_view: bool = False):
+        zoom_state = self.get_zoom_state() if preserve_view and self._cached_merge is not None else None
         self._cached_merge = merge_rgb
         self._cached_channels = channel_imgs
         self._cached_names = channel_names
         self._cached_colors = channel_colors_hex or ["#3498DB","#2ECC71","#E74C3C","#00BCD4","#E91E63","#FFC107"]
         self._render()
+        if zoom_state is not None:
+            # Grid cells receive their final size after the layout event.
+            # Restoring immediately is overwritten by SyncedView.resizeEvent.
+            QTimer.singleShot(0, lambda state=zoom_state: self.set_zoom_state(*state))
 
     def _render(self):
         if self._cached_merge is None: return

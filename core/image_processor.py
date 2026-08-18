@@ -250,12 +250,15 @@ def get_merge_display(
     ch_black: Optional[list] = None,
     ch_white: Optional[list] = None,
     channel_names: Optional[list] = None,
+    enabled_channels: Optional[list] = None,
 ) -> np.ndarray:
     """
     Create an RGB merge using per-channel LUT colors (matches preview).
 
     Each channel's LUT color (via _guess_color) determines which RGB
     component(s) it contributes to, same as _do_render() in main_window.
+    When ``enabled_channels`` is supplied, disabled channels are excluded
+    from the merge.
     """
     nch = _detect_nch(raw)
     h, w = raw.shape[-2], raw.shape[-1]
@@ -276,6 +279,7 @@ def get_merge_display(
     cblk = _pad(ch_black, 0.0, nch)
     cwht = _pad(ch_white, 255.0, nch)
     names = channel_names or [f"Ch{i}" for i in range(nch)]
+    enabled = _pad(enabled_channels, True, nch)
 
     def _adjust(ch_data, i):
         if use_levels:
@@ -283,6 +287,8 @@ def get_merge_display(
         return apply_bc(ch_data, cb[i], cc[i])
 
     for i in range(min(nch, 3)):
+        if not enabled[i]:
+            continue
         ci = normalize_to_8bit(_get_ch(raw, i, z))
         ci_f = _adjust(ci, i).astype(np.float64)
         color = _guess_color(names[i] if i < len(names) else "", i)
@@ -294,6 +300,8 @@ def get_merge_display(
 
     # Handle 4+ channels: same color-based blending
     for i in range(3, nch):
+        if not enabled[i]:
+            continue
         ci = normalize_to_8bit(_get_ch(raw, i, z))
         ci_f = _adjust(ci, i).astype(np.float64)
         color = _guess_color(names[i] if i < len(names) else "", i)

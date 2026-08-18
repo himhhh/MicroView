@@ -66,6 +66,11 @@ class MainWindow(QMainWindow):
         self.folder_tree: dict = {}
         self.current_filepath: str | None = None
         self._file_settings: dict = {}
+        self._global_display_settings = None
+        self._loading_file_settings = False
+        self._export_channel_selection = None
+        self._export_merge_selection = None
+        self._export_merge_enabled = True
         self._pending_open_file: str | None = None
         self._active_workers: list = []
         self.current_raw_data = None   # numpy array of current file
@@ -151,6 +156,49 @@ class MainWindow(QMainWindow):
         return ("#2d2d2d", "#CCC", "#3c3c3c", "#CCC",
                 "#1e1e1e", "#2d2d2d", "#3c3c3c")
 
+    @staticmethod
+    def _merge_color_priority(hex_color: str) -> int:
+        """Use the same blue → green → red priority as the preview Merge title."""
+        try:
+            r, g, b = int(hex_color[1:3], 16), int(hex_color[3:5], 16), int(hex_color[5:7], 16)
+        except (ValueError, IndexError):
+            return 6
+        if b > r and b > g:
+            return 0
+        if g > r and g > b:
+            return 1
+        if r > g and r > b:
+            return 2
+        if b > r and g > r:
+            return 3
+        if r > g and b > g:
+            return 4
+        return 5
+
+    def _merge_selection_html(self, selections: list[tuple[str, str]]) -> str:
+        """Build the Merge title using the exact preview title color convention."""
+        colors = [color for _, color in selections]
+        top = sorted(colors, key=self._merge_color_priority)[:3]
+        if not top:
+            return "<span style='color:#FFF'>Merge</span>"
+        if len(top) == 1:
+            return f"<span style='color:{top[0]}'>Merge</span>"
+        if len(top) == 2:
+            return (f"<span style='color:{top[0]}'>Mer</span>"
+                    f"<span style='color:{top[1]}'>ge</span>")
+        return (f"<span style='color:{top[0]}'>M</span>"
+                f"<span style='color:{top[1]}'>er</span>"
+                f"<span style='color:{top[2]}'>ge</span>")
+
+    @staticmethod
+    def _merge_settings_button_style() -> str:
+        return (
+            "QToolButton { color:#F2F2F2; background:#3C3C3C; border:1px solid #666; "
+            "border-radius:4px; font-size:15px; font-weight:600; }"
+            "QToolButton:hover { background:#555; border-color:#888; }"
+            "QToolButton:pressed { background:#007AFF; border-color:#007AFF; }"
+        )
+
     def _setup_menu_bar(self):
         menu_bar = self.menuBar()
 
@@ -214,6 +262,7 @@ class MainWindow(QMainWindow):
         self.controls.contrast_changed.connect(self._on_adjustment_changed)
         self.controls.per_channel_changed.connect(self._on_per_channel_changed)
         self.controls.channel_toggle_changed.connect(self._on_channel_toggle)
+        self.controls.global_apply_changed.connect(self._on_global_apply_changed)
         self.controls.export_requested.connect(self._on_export)
         self.controls.export_channels_requested.connect(self._on_export_channels)
         self.controls.batch_export_requested.connect(self._on_batch_export)
@@ -379,11 +428,18 @@ class MainWindow(QMainWindow):
                 histograms.append(h.astype(np.int32))
             self.controls.set_histograms(histograms)
 
+            # Rebuilding controls emits default-state signals; do not let those
+            # overwrite the global snapshot before it is applied.
+            self._loading_file_settings = True
+
             # Set up per-channel controls
             self.controls.set_channels(channel_names)
 
-            # Restore saved settings + zoom, or reset defaults
-            if filepath in self._file_settings:
+            # Apply global settings lazily only when this file is opened.
+            # Otherwise restore this file/Series' own in-session settings.
+            if self.controls.global_apply_enabled() and self._global_display_settings:
+                self.controls.restore_settings(*self._global_display_settings)
+            elif filepath in self._file_settings:
                 saved = self._file_settings[filepath]
                 if len(saved) >= 6:
                     # Format: (black, white, brightness, contrast, enabled, zoom)
@@ -406,6 +462,8 @@ class MainWindow(QMainWindow):
                 pass
                 self.controls.reset_to_defaults()
 
+            self._loading_file_settings = False
+
             # Display merge + all single channels
             self._display_all()
 
@@ -426,10 +484,11 @@ class MainWindow(QMainWindow):
 
     # ── display ─────────────────────────────────────────────────
 
-    def _display_all(self):
+    def _display_all(self, preserve_view: bool = False):
         """Request a render (debounced — actual render happens via QTimer)."""
         if self.current_raw_data is None:
             return
+        self._preserve_view_on_render = preserve_view
         # Debounce: restart the timer on every call
         self._render_timer.start()
 
@@ -520,7 +579,10 @@ class MainWindow(QMainWindow):
             for ci in range(len(adj_channels)):
                 adj_channels[ci] = _dsb(adj_channels[ci], px_um, **_kw)
 
-        self.viewer.display_image(merge, adj_channels, filtered_names, filtered_colors)
+        self.viewer.display_image(
+            merge, adj_channels, filtered_names, filtered_colors,
+            preserve_view=getattr(self, '_preserve_view_on_render', False),
+        )
 
     def _on_channel_changed(self, channel: str | int):
         pass  # unused; kept for backward compat with controls signal
@@ -607,9 +669,13 @@ class MainWindow(QMainWindow):
                         ch_black=blk, ch_white=wht,
                         ch_brightness=br, ch_contrast=ct,
                         channel_names=ch_names,
+                        enabled_channels=enabled,
                     )
                 else:
-                    merge = get_merge_display(self.current_raw_data, channel_names=ch_names)
+                    merge = get_merge_display(
+                        self.current_raw_data, channel_names=ch_names,
+                        enabled_channels=enabled,
+                    )
                 PILImage.fromarray(merge).save(tp)
                 files_to_open.append(tp)
 
@@ -670,13 +736,34 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "打开失败", f"无法启动 ImageJ:\n{e}")
 
     def _on_adjustment_changed(self):
-        self._display_all()
+        self._update_global_display_settings()
+        self._display_all(preserve_view=True)
 
     def _on_per_channel_changed(self, cb, cc):
-        self._display_all()
+        self._update_global_display_settings()
+        self._display_all(preserve_view=True)
 
     def _on_channel_toggle(self):
-        self._display_all()
+        self._update_global_display_settings()
+        self._display_all(preserve_view=True)
+
+    def _on_global_apply_changed(self, enabled: bool):
+        """Capture settings once; actual application is deferred until file switching."""
+        if enabled:
+            self._update_global_display_settings(force=True)
+        else:
+            self._global_display_settings = None
+
+    def _update_global_display_settings(self, force: bool = False):
+        if self._loading_file_settings:
+            return
+        if not force and not self.controls.global_apply_enabled():
+            return
+        self._global_display_settings = (
+            self.controls.all_black_points(), self.controls.all_white_points(),
+            self.controls.all_enabled(), self.controls.all_brightness(),
+            self.controls.all_contrast(),
+        )
 
     def _export_file(self, filepath: str, lif_idx: int, out_folder: str, base_name: str = ""):
         """Export merge + channels for a single file to a folder."""
@@ -791,13 +878,15 @@ class MainWindow(QMainWindow):
         wht = self.controls.all_white_points()
         cb = self.controls.all_brightness()
         cc = self.controls.all_contrast()
+        enabled = self.controls.all_enabled()
         entry = self.file_index.get(self.current_filepath, {})
         ch_names = entry.get('channel_names', [])
         from core.image_processor import get_merge_display
         img = get_merge_display(self.current_raw_data,
                                 ch_black=blk, ch_white=wht,
                                 ch_brightness=cb, ch_contrast=cc,
-                                channel_names=ch_names)
+                                channel_names=ch_names,
+                                enabled_channels=enabled)
         img = self._apply_scale_bar(img, entry)
         from PIL import Image
         os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
@@ -823,7 +912,7 @@ class MainWindow(QMainWindow):
         # ── Channel + format selection dialog ──
         from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout,
                                         QCheckBox, QComboBox, QLabel, QPushButton,
-                                        QGroupBox)
+                                        QGroupBox, QToolButton)
         ch_dlg = QDialog(self)
         ch_dlg.setWindowTitle("选择导出通道")
         ch_dlg.setMinimumWidth(300)
@@ -832,17 +921,85 @@ class MainWindow(QMainWindow):
         ch_lay.addWidget(QLabel(f"当前文件: {entry.get('filename', '?')}"))
         ch_lay.addWidget(QLabel(f"通道数: {nch}"))
 
-        # Merge checkbox
-        merge_cb = QCheckBox("Merge (合成图)")
-        merge_cb.setChecked(True)
-        ch_lay.addWidget(merge_cb)
+        # Merge channels are configured independently from single-channel exports.
+        merge_cb = QCheckBox()
+        merge_cb.setChecked(self._export_merge_enabled)
+        merge_channel_indices = list(self._export_merge_selection or [])
+        if self._export_merge_selection is None:
+            merge_channel_indices = [
+                i for i, enabled in enumerate(self.controls.all_enabled()) if enabled
+            ]
+        if not merge_channel_indices:
+            merge_channel_indices = list(range(nch))
+
+        merge_row = QHBoxLayout()
+        merge_row.setContentsMargins(0, 0, 0, 0)
+        merge_row.setSpacing(6)
+        merge_toggle = QWidget()
+        merge_toggle_layout = QHBoxLayout(merge_toggle)
+        merge_toggle_layout.setContentsMargins(0, 0, 0, 0)
+        merge_toggle_layout.setSpacing(8)
+        # macOS uses a larger native checkbox indicator; keep its real width
+        # so the adjacent Merge title never overlaps the indicator.
+        merge_cb.setFixedWidth(merge_cb.sizeHint().width())
+        merge_toggle_layout.addWidget(merge_cb)
+        merge_label = QLabel()
+        merge_label.setTextFormat(Qt.RichText)
+        merge_toggle_layout.addWidget(merge_label)
+        merge_row.addWidget(merge_toggle)
+        merge_settings_btn = QToolButton()
+        merge_settings_btn.setText("⚙")
+        merge_settings_btn.setToolTip("选择参与 Merge 合成的通道")
+        merge_settings_btn.setFixedSize(24, 24)
+        merge_settings_btn.setStyleSheet(self._merge_settings_button_style())
+        merge_row.addWidget(merge_settings_btn)
+        merge_row.addStretch()
+        ch_lay.addLayout(merge_row)
+
+        def _update_merge_settings_tip():
+            count = len(merge_channel_indices)
+            merge_settings_btn.setToolTip(f"选择参与 Merge 合成的通道（已选 {count} 个）")
+            selections = []
+            for i in merge_channel_indices:
+                name = channel_names[i] if i < len(channel_names) else f"Ch{i+1}"
+                color = getattr(self, '_channel_colors', {}).get(name, "#3498DB")
+                selections.append((name, color))
+            merge_label.setText(self._merge_selection_html(selections))
+
+        def _choose_merge_channels():
+            merge_dlg = QDialog(ch_dlg)
+            merge_dlg.setWindowTitle("选择 Merge 通道")
+            merge_lay = QVBoxLayout(merge_dlg)
+            merge_lay.addWidget(QLabel("仅勾选需要参与 Merge 合成的通道："))
+            merge_boxes = []
+            for i, name in enumerate(channel_names):
+                box = QCheckBox(name)
+                box.setChecked(i in merge_channel_indices)
+                hex_c = getattr(self, '_channel_colors', {}).get(name, "#3498DB")
+                box.setStyleSheet(f"color: {hex_c}; font-weight: 600;")
+                merge_boxes.append(box)
+                merge_lay.addWidget(box)
+
+            merge_btns = QDialogButtonBox(QDialogButtonBox.Cancel | QDialogButtonBox.Ok)
+            merge_btns.rejected.connect(merge_dlg.reject)
+            merge_btns.accepted.connect(merge_dlg.accept)
+            merge_lay.addWidget(merge_btns)
+
+            if merge_dlg.exec() == QDialog.Accepted:
+                merge_channel_indices[:] = [
+                    i for i, box in enumerate(merge_boxes) if box.isChecked()
+                ]
+                _update_merge_settings_tip()
+
+        merge_settings_btn.clicked.connect(_choose_merge_channels)
+        _update_merge_settings_tip()
 
         # Channel checkboxes — colors from main viewer (_channel_colors)
         ch_lay.addWidget(QLabel("— 单独通道 —"))
         ch_boxes = []
         for i, name in enumerate(channel_names):
             cb = QCheckBox(f"{name}")
-            cb.setChecked(True)
+            cb.setChecked(self._export_channel_selection is None or i in self._export_channel_selection)
             hex_c = getattr(self, '_channel_colors', {}).get(name, "#3498DB")
             cb.setStyleSheet(f"color: {hex_c}; font-weight: 600;")
             ch_boxes.append(cb)
@@ -887,10 +1044,19 @@ class MainWindow(QMainWindow):
         # Get selections
         export_merge = merge_cb.isChecked()
         selected_indices = [i for i, cb in enumerate(ch_boxes) if cb.isChecked()]
+        selected_merge_indices = list(merge_channel_indices)
         export_fmt = fmt_combo.currentText()  # "PNG" or "TIFF"
+
+        # Keep the most recent dialog choices for this app session only.
+        self._export_merge_enabled = export_merge
+        self._export_channel_selection = list(selected_indices)
+        self._export_merge_selection = list(selected_merge_indices)
 
         if not export_merge and not selected_indices:
             QMessageBox.information(self, "提示", "请至少选择一个通道或 Merge。")
+            return
+        if export_merge and not selected_merge_indices:
+            QMessageBox.information(self, "提示", "请在 Merge 设置中至少选择一个通道。")
             return
 
         # ── Choose output folder ──
@@ -931,10 +1097,12 @@ class MainWindow(QMainWindow):
 
             if export_merge:
                 merge_path = os.path.join(folder, f"{base}_Merge{ext}")
+                merge_enabled = [i in selected_merge_indices for i in range(nch)]
                 merge = get_merge_display(self.current_raw_data,
                                           ch_black=blk_vals, ch_white=wht_vals,
                                           ch_brightness=br_vals, ch_contrast=ct_vals,
-                                          channel_names=channel_names)
+                                          channel_names=channel_names,
+                                          enabled_channels=merge_enabled)
                 merge = self._apply_scale_bar(merge, entry)
                 Image.fromarray(merge).save(merge_path, format=fmt)
                 count += 1
@@ -973,7 +1141,7 @@ class MainWindow(QMainWindow):
     def _do_batch_export(self):
         from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout,
                                         QCheckBox, QTreeWidget, QTreeWidgetItem, QPushButton,
-                                        QComboBox, QLabel, QGroupBox, QWidget)
+                                        QComboBox, QLabel, QGroupBox, QWidget, QToolButton)
         from PySide6.QtCore import Qt as Qt2
 
         dlg = QDialog(self)
@@ -1004,16 +1172,73 @@ class MainWindow(QMainWindow):
         layout.addWidget(sb_cb)
 
         # ── Row 1: Dynamic channel filter ──
-        ch_filter_group = QGroupBox("通道过滤 (仅导出勾选的通道)")
+        ch_filter_group = QGroupBox("通道导出与 Merge 设置")
         ch_filter_group.setStyleSheet(f"QGroupBox{{font-weight:600;color:{C[1]};}}")
         ch_filter_layout = QHBoxLayout(ch_filter_group)
         ch_filter_layout.setContentsMargins(6, 4, 6, 4)
         ch_filter_layout.setSpacing(4)
 
-        # Merge always available
-        merge_filter_cb = QCheckBox("Merge")
+        # Merge selection is independent from the individual-channel filter.
+        merge_filter_cb = QCheckBox()
         merge_filter_cb.setChecked(True)
-        ch_filter_layout.addWidget(merge_filter_cb)
+        merge_channel_names = set()
+        merge_selection_customized = False
+        _batch_ch_color_map = {}
+
+        merge_label = QLabel()
+        merge_label.setTextFormat(Qt.RichText)
+        merge_toggle = QWidget()
+        merge_toggle_layout = QHBoxLayout(merge_toggle)
+        merge_toggle_layout.setContentsMargins(0, 0, 0, 0)
+        merge_toggle_layout.setSpacing(8)
+        merge_filter_cb.setFixedWidth(merge_filter_cb.sizeHint().width())
+        merge_toggle_layout.addWidget(merge_filter_cb)
+        merge_toggle_layout.addWidget(merge_label)
+        merge_settings_btn = QToolButton()
+        merge_settings_btn.setText("⚙")
+        merge_settings_btn.setToolTip("选择参与 Merge 合成的通道")
+        merge_settings_btn.setFixedSize(24, 24)
+        merge_settings_btn.setStyleSheet(self._merge_settings_button_style())
+
+        def _update_batch_merge_label():
+            selections = [
+                (name, _batch_ch_color_map.get(name, "#3498DB"))
+                for name in merge_channel_names
+            ]
+            merge_label.setText(self._merge_selection_html(selections))
+            merge_settings_btn.setToolTip(f"选择参与 Merge 合成的通道（已选 {len(selections)} 个）")
+
+        def _choose_batch_merge_channels():
+            if not _ch_filter_state:
+                QMessageBox.information(dlg, "提示", "请先勾选至少一个文件，再设置 Merge 通道。")
+                return
+            merge_dlg = QDialog(dlg)
+            merge_dlg.setWindowTitle("选择 Merge 通道")
+            merge_lay = QVBoxLayout(merge_dlg)
+            merge_lay.addWidget(QLabel("仅勾选需要参与所有 Merge 合成的通道："))
+            merge_boxes = []
+            for name in sorted(_ch_filter_state):
+                box = QCheckBox(name)
+                box.setChecked(name in merge_channel_names)
+                box.setStyleSheet(
+                    f"color:{_batch_ch_color_map.get(name, '#3498DB')};font-weight:600;"
+                )
+                merge_boxes.append((name, box))
+                merge_lay.addWidget(box)
+            merge_btns = QDialogButtonBox(QDialogButtonBox.Cancel | QDialogButtonBox.Ok)
+            merge_btns.rejected.connect(merge_dlg.reject)
+            merge_btns.accepted.connect(merge_dlg.accept)
+            merge_lay.addWidget(merge_btns)
+            if merge_dlg.exec() == QDialog.Accepted:
+                merge_channel_names.clear()
+                merge_channel_names.update(name for name, box in merge_boxes if box.isChecked())
+                nonlocal merge_selection_customized
+                merge_selection_customized = True
+                _update_batch_merge_label()
+
+        merge_settings_btn.clicked.connect(_choose_batch_merge_channels)
+        ch_filter_layout.addWidget(merge_toggle)
+        ch_filter_layout.addWidget(merge_settings_btn)
 
         ch_filter_layout.addWidget(QLabel("│"))  # visual separator
         ch_filter_container = QWidget()
@@ -1103,6 +1328,14 @@ class MainWindow(QMainWindow):
 
             all_channels = sorted(nd2_channels | lif_channels)
             all_set = set(all_channels)
+            _batch_ch_color_map.clear()
+            _batch_ch_color_map.update(_ch_color_map)
+            if merge_selection_customized:
+                merge_channel_names.intersection_update(all_set)
+            else:
+                merge_channel_names.clear()
+                merge_channel_names.update(all_set)
+            _update_batch_merge_label()
             current_checked = set()
             for name, cb in _ch_filter_state.items():
                 if cb.isChecked():
@@ -1208,6 +1441,9 @@ class MainWindow(QMainWindow):
             if not export_merge and not selected_channels:
                 QMessageBox.information(dlg, "提示", "请至少选择一个通道或 Merge。")
                 return
+            if export_merge and not merge_channel_names:
+                QMessageBox.information(dlg, "提示", "请在 Merge 设置中至少选择一个通道。")
+                return
 
             out = QFileDialog.getExistingDirectory(dlg, "选择导出文件夹", os.path.expanduser("~/Desktop"))
             if not out: return
@@ -1262,9 +1498,15 @@ class MainWindow(QMainWindow):
 
                     if export_merge:
                         merge_path = os.path.join(out, f"{base}_Merge{ext}")
+                        merge_enabled = [
+                            (ch_names[ch] if ch < len(ch_names) else f"Ch{ch+1}")
+                            in merge_channel_names
+                            for ch in range(nch)
+                        ]
                         merge = get_merge_display(raw, ch_black=_blk_vals, ch_white=_wht_vals,
                                                   ch_brightness=_br_vals, ch_contrast=_ct_vals,
-                                                  channel_names=ch_names)
+                                                  channel_names=ch_names,
+                                                  enabled_channels=merge_enabled)
                         merge = self._apply_scale_bar(merge, entry)
                         Image.fromarray(merge).save(merge_path, format=fmt)
                         exported.append(merge_path)
