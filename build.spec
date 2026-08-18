@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
 block_cipher = None
-PROJ = '/Users/jimmy/Downloads/Jimmy/files/vibe coding/nd2-browser'
+PROJ = str(Path(SPECPATH).resolve())
 
 added_files = [
     ('resources/style_dark.qss', 'resources'),
@@ -40,7 +40,13 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['tkinter', 'matplotlib', 'scipy', 'pandas', 'IPython', 'jupyter'],
+    excludes=[
+        'tkinter', 'matplotlib', 'scipy', 'pandas', 'IPython', 'jupyter',
+        # Optional scientific stacks pulled in by dependency hooks but unused
+        # by MicroView. Excluding them keeps release bundles practical.
+        'torch', 'tensorflow', 'lightning', 'statsmodels', 'patsy',
+        'numba', 'llvmlite', 'h5py',
+    ],
     cipher=block_cipher,
 )
 
@@ -59,7 +65,7 @@ coll = COLLECT(exe, a.binaries, a.zipfiles, a.datas,
 app = BUNDLE(coll, name='MicroView.app', icon=icon,
     bundle_identifier='com.microview.app',
     info_plist={
-        'CFBundleShortVersionString': '1.0.0', 'CFBundleVersion': '1.0.0',
+        'CFBundleShortVersionString': '1.2.0', 'CFBundleVersion': '1.2.0',
         'NSHighResolutionCapable': True, 'LSMinimumSystemVersion': '11.0',
         'CFBundleDocumentTypes': [{
             'CFBundleTypeExtensions': ['nd2', 'ND2', 'lif', 'LIF'],
