@@ -78,6 +78,10 @@ pyinstaller build.spec
 
 ### Windows
 
+最简单的方式是在 Windows 上双击项目根目录的 `build.bat`。脚本会自动创建虚拟环境、安装依赖、构建程序，并在成功后打开 `MicroView.exe` 所在文件夹。
+
+也可以手动运行：
+
 ```bash
 pip install -r requirements.txt
 pyinstaller build-windows.spec
@@ -87,7 +91,7 @@ pyinstaller build-windows.spec
 
 ## 技术栈
 
-Python · PySide6 · NumPy · nd2 · readlif · Pillow · OpenCV · PyInstaller
+Python · PySide6 · NumPy · nd2 · readlif · Pillow · PyInstaller
 
 ## 致谢
 

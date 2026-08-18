@@ -29,7 +29,7 @@ a = Analysis(
     binaries=[],
     datas=added_files,
     hiddenimports=[
-        'nd2', 'numpy', 'cv2', 'PIL', 'PIL.Image',
+        'nd2', 'numpy', 'PIL', 'PIL.Image',
         'dask', 'dask.array', 'pydantic', 'ome_types',
         'readlif', 'readlif.reader', 
         'bs4', 'soupsieve', 'Foundation', 'AppKit', 'pyobjc-core', 'pyobjc_framework_Cocoa',
@@ -45,7 +45,7 @@ a = Analysis(
         # Optional scientific stacks pulled in by dependency hooks but unused
         # by MicroView. Excluding them keeps release bundles practical.
         'torch', 'tensorflow', 'lightning', 'statsmodels', 'patsy',
-        'numba', 'llvmlite', 'h5py',
+        'numba', 'llvmlite', 'h5py', 'cv2',
     ],
     cipher=block_cipher,
 )
