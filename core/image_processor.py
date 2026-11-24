@@ -360,6 +360,8 @@ def draw_scale_bar(rgb: np.ndarray, pixel_size_um: float,
     from PIL import Image, ImageDraw, ImageFont as _IF
 
     h, w = rgb.shape[:2]
+    if not w or not h or pixel_size_um <= 0:
+        return rgb.copy()
     img = Image.fromarray(rgb)
     draw = ImageDraw.Draw(img)
 
@@ -374,12 +376,19 @@ def draw_scale_bar(rgb: np.ndarray, pixel_size_um: float,
                 bar_um = nice[i]
                 break
 
-    bar_px = int(bar_um / pixel_size_um)
-    if bar_px > w * 0.9:
-        bar_px = int(w * 0.9)
+    margin = min(max(12, int(min(w, h) * 0.03)), (w - 1) // 4, (h - 1) // 4)
+    max_bar_px = max(1, min(int(w * 0.9), w - 2 * margin))
+    bar_px = max(1, int(bar_um / pixel_size_um))
+    if bar_px > max_bar_px:
+        bar_px = max_bar_px
+        # A small crop may not fit the requested bar; its label must match
+        # the actual physical length rather than the unclipped request.
+        bar_um = bar_px * pixel_size_um
+    thickness = min(thickness, max(1, h - 2 * margin))
+    if font_size + 6 + thickness > h - 2 * margin:
+        show_label = False
 
     # Position — layout: text on top, bar line below
-    margin = max(12, int(min(w, h) * 0.03))
     gap = 4  # px between text and bar
     text_h = font_size + 2 if show_label else 0
     total_h = text_h + gap + (thickness if style == 'filled' else thickness) if show_label else thickness
@@ -466,7 +475,7 @@ def draw_scale_bar(rgb: np.ndarray, pixel_size_um: float,
                     break
                 except (OSError, IOError):
                     continue
-        label = f"{bar_um} µm" if bar_um >= 1 else f"{bar_um*1000:.0f} nm"
+        label = f"{bar_um:g} µm" if bar_um >= 1 else f"{bar_um*1000:g} nm"
         bbox = draw.textbbox((0, 0), label, font=font)
         tw = bbox[2] - bbox[0]
         tx = x0 + (bar_px - tw) / 2

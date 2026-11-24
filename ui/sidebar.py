@@ -3,11 +3,54 @@ Sidebar — folder tree with ND2 files + LIF containers (expandable).
 """
 import os
 from pathlib import Path
-from PySide6.QtCore import Qt, Signal, QPoint
+from PySide6.QtCore import Qt, Signal, QPoint, QMimeData, QUrl, QTimer
+from PySide6.QtGui import QDrag
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton,
-    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QApplication, QAbstractItemView, QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton,
+    QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator, QVBoxLayout, QWidget,
 )
+
+
+class ExportTreeWidget(QTreeWidget):
+    export_name_ready = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.export_files = None
+        self.setDragEnabled(True)
+        self.setDragDropMode(QAbstractItemView.DragOnly)
+        self.setDefaultDropAction(Qt.CopyAction)
+
+    def _create_drag_mime_data(self):
+        item = self.currentItem()
+        key = item.data(0, Qt.UserRole) if item else None
+        if not key or key in ("__folder__", "__lif_container__") or not self.export_files:
+            return None
+        paths = self.export_files(key)
+        if not paths:
+            return None
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(str(path)) for path in paths])
+        return mime
+
+    def startDrag(self, supported_actions):
+        item = self.currentItem()
+        name = ((item.data(0, Qt.UserRole + 2) or Path(item.data(0, Qt.UserRole + 1) or '').name)
+                if item else '')
+        mime = self._create_drag_mime_data()
+        if mime is None:
+            return
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        if name:
+            self.export_name_ready.emit(name)
+        drag.exec(Qt.CopyAction, Qt.CopyAction)
+        if name:
+            # Native Office drops may return IgnoreAction or replace clipboard
+            # data. Publish the source name again after leaving the drag loop.
+            QTimer.singleShot(0, self, lambda value=name: self.export_name_ready.emit(value))
+        drag.deleteLater()
+
 
 class SidebarWidget(QWidget):
     file_selected = Signal(str)
@@ -18,6 +61,7 @@ class SidebarWidget(QWidget):
         self.setMaximumWidth(420)
         self._file_index: dict = {}
         self._folder_tree: dict | None = None
+        self._cropped_keys = set()
         self._setup_ui()
 
     def _setup_ui(self):
@@ -34,7 +78,7 @@ class SidebarWidget(QWidget):
         tl.addWidget(tlabel)
         layout.addWidget(title)
 
-        self.tree = QTreeWidget()
+        self.tree = ExportTreeWidget()
         self.tree.setObjectName("fileTree")
         self.tree.setHeaderHidden(True)
         self.tree.setIndentation(20)
@@ -60,6 +104,26 @@ class SidebarWidget(QWidget):
 
     def show_scanning_indicator(self, v: bool):
         self.scan_label.setVisible(v)
+
+    def set_cropped_files(self, keys):
+        self._cropped_keys = set(keys)
+        iterator = QTreeWidgetItemIterator(self.tree)
+        while iterator.value():
+            self._update_crop_marker(iterator.value())
+            iterator += 1
+
+    def _update_crop_marker(self, item):
+        key = item.data(0, Qt.UserRole)
+        if not key or key in ('__folder__', '__lif_container__'):
+            return
+        if item.data(0, Qt.UserRole + 3) is None:
+            item.setData(0, Qt.UserRole + 3, item.text(0))
+            item.setData(0, Qt.UserRole + 4, item.toolTip(0))
+        text = item.data(0, Qt.UserRole + 3)
+        tip = item.data(0, Qt.UserRole + 4)
+        cropped = key in self._cropped_keys
+        item.setText(0, f'✂ {text}' if cropped else text)
+        item.setToolTip(0, f'{tip}\n已裁剪' if cropped else tip)
 
     def populate(self, folder_tree: dict, file_index: dict[str, dict]):
         """Replace entire tree (File > Open Folder)."""
@@ -124,29 +188,35 @@ class SidebarWidget(QWidget):
                 img_item = QTreeWidgetItem(lif_item)
                 ln = Path(lp).name
                 raw_name = img_entry.get("filename", "")
-                img_name = raw_name.split("[")[-1].rstrip("]") if "[" in raw_name else raw_name
+                prefix = f"{ln} ["
+                img_name = (raw_name[len(prefix):-1]
+                            if raw_name.startswith(prefix) and raw_name.endswith("]") else raw_name)
                 display = f"{ln} - {img_name}"
                 img_item.setText(0, f"🔬 {display}")
                 img_item.setData(0, Qt.UserRole, img_entry.get("_idx_key", img_entry.get("filepath", "")))
                 img_item.setData(0, Qt.UserRole + 1, img_entry.get("filepath", ""))
+                img_item.setData(0, Qt.UserRole + 2, display)
                 ch_names = img_entry.get("channel_names", [])
                 ch_str = ", ".join(ch_names[:3]) if ch_names else f"{img_entry.get('channel_count',1)}ch"
                 w, h = img_entry.get("width", 0), img_entry.get("height", 0)
                 tip = f"{display}\n通道: {ch_str}"
                 if w and h: tip += f"\n尺寸: {w}×{h}"
                 img_item.setToolTip(0, tip)
+                self._update_crop_marker(img_item)
         for entry in node.get("files", []):
             fp = entry.get("filepath", ""); name = entry.get("filename", "?")
             item = QTreeWidgetItem(parent)
             item.setText(0, f"🔬 {name}")
             item.setData(0, Qt.UserRole, entry.get("_idx_key", fp))
             item.setData(0, Qt.UserRole + 1, fp)
+            item.setData(0, Qt.UserRole + 2, name)
             ch_names = entry.get("channel_names", [])
             ch_str = ", ".join(ch_names[:3]) if ch_names else f"{entry.get('channel_count',1)}ch"
             w, h = entry.get("width", 0), entry.get("height", 0)
             tip = f"{name}\n通道: {ch_str}"
             if w and h: tip += f"\n尺寸: {w}×{h}"
             item.setToolTip(0, tip)
+            self._update_crop_marker(item)
 
     def select_file(self, key: str):
         """Find and highlight a file in the tree."""
@@ -234,8 +304,16 @@ class SidebarWidget(QWidget):
 
         # ── File items ──
         if not fp: return
+        actions["copy_name"] = menu.addAction("复制文件名")
+        actions["copy_path"] = menu.addAction("复制图片路径")
         actions["reveal"] = menu.addAction("在 Finder 中显示")
-        if menu.exec(self.tree.viewport().mapToGlobal(pos)) == actions["reveal"]:
+        act = menu.exec(self.tree.viewport().mapToGlobal(pos))
+        if act == actions["copy_name"]:
+            name = item.data(0, Qt.UserRole + 2) or Path(fp).name
+            QApplication.clipboard().setText(name)
+        elif act == actions["copy_path"]:
+            QApplication.clipboard().setText(fp)
+        elif act == actions["reveal"]:
             import subprocess, sys as _sys
             if _sys.platform == 'darwin':
                 subprocess.run(['open', '-R', fp])

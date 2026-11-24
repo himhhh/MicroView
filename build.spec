@@ -1,5 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
+import importlib
+
+# Finder document events require Cocoa; do not ship an app without it.
+for module in ('Foundation', 'AppKit'):
+    importlib.import_module(module)
+
 block_cipher = None
 PROJ = str(Path(SPECPATH).resolve())
 
@@ -32,7 +38,7 @@ a = Analysis(
         'nd2', 'numpy', 'PIL', 'PIL.Image',
         'dask', 'dask.array', 'pydantic', 'ome_types',
         'readlif', 'readlif.reader', 
-        'bs4', 'soupsieve', 'Foundation', 'AppKit', 'pyobjc-core', 'pyobjc_framework_Cocoa',
+        'bs4', 'soupsieve', 'Foundation', 'AppKit', 'objc',
         'ui', 'ui.main_window', 'ui.viewer', 'ui.sidebar', 'ui.controls', 'ui.settings_dialog', 'ui.lut_widget',
         'core', 'core.scanner', 'core.nd2_reader', 'core.image_processor', 'core.lif_reader',
         'PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets',

@@ -71,6 +71,8 @@ class MainWindow(QMainWindow):
         self._export_channel_selection = None
         self._export_merge_selection = None
         self._export_merge_enabled = True
+        self._drag_export_dirs = []
+        self._crop_regions = {}
         self._pending_open_file: str | None = None
         self._active_workers: list = []
         self.current_raw_data = None   # numpy array of current file
@@ -122,7 +124,11 @@ class MainWindow(QMainWindow):
     def _on_settings(self):
         """Open channel color settings dialog."""
         from .settings_dialog import ColorSettingsDialog
-        dlg = ColorSettingsDialog(self._dlg_colors, self)
+        image_size = None
+        if self.current_raw_data is not None:
+            x0, y0, x1, y1 = self._crop_bounds(self.current_raw_data.shape[-2:], self.current_filepath)
+            image_size = (x1 - x0, y1 - y0)
+        dlg = ColorSettingsDialog(self._dlg_colors, self, image_size=image_size)
         # Show current file's pixel size — always read directly from file
         # (scanner cache may contain stale/incorrect values)
         px = None
@@ -245,6 +251,8 @@ class MainWindow(QMainWindow):
         # Sidebar (left)
         self.sidebar = SidebarWidget()
         self.sidebar.file_selected.connect(self._on_file_selected)
+        self.sidebar.tree.export_files = self._prepare_drag_files
+        self.sidebar.tree.export_name_ready.connect(self._on_drag_export_name_ready)
 
         # Right panel: viewer + controls
         right_panel = QWidget()
@@ -253,6 +261,13 @@ class MainWindow(QMainWindow):
         right_layout.setSpacing(0)
 
         self.viewer = ViewerWidget()
+        self.viewer.set_default_crop_size((
+            self.settings.value('crop_default_width_px', 0, type=int),
+            self.settings.value('crop_default_height_px', 0, type=int),
+        ))
+        self.viewer.crop_confirmed.connect(self._on_crop_confirmed)
+        self.viewer.crop_cleared.connect(self._on_crop_cleared)
+        self.viewer.crop_editing_changed.connect(self._on_crop_editing_changed)
         right_layout.addWidget(self.viewer, 1)  # stretch factor 1
 
         self.controls = ControlsWidget()
@@ -392,7 +407,9 @@ class MainWindow(QMainWindow):
                 self.controls.all_enabled(),
                 self.viewer.get_zoom_state()
             )
+        self.viewer.cancel_crop()
         self.current_filepath = filepath
+        self.current_raw_data = None
         try:
             from core.nd2_reader import read_pixels
 
@@ -566,12 +583,17 @@ class MainWindow(QMainWindow):
                             ci * (color[comp] / 255.0))
             merge = np.clip(rgb, 0, 255).astype(np.uint8)
 
+        self.viewer.set_crop_region(self._crop_regions.get(self.current_filepath))
+        if not self.viewer.crop_editing:
+            merge = self._crop_image(merge)
+            adj_channels = [self._crop_image(image) for image in adj_channels]
+
         # ── Scale bar (preview) ──
         _s = QSettings("MicroView", "MicroView")
         px_um = _s.value("scalebar_pixel_size_override", 0.0, type=float)
-        if not px_um or px_um <= 0:
+        _sp = _s.value("scalebar_preview", False, type=bool) and not self.viewer.crop_editing
+        if _sp and (not px_um or px_um <= 0):
             px_um = self._get_pixel_size_um(entry)
-        _sp = _s.value("scalebar_preview", False, type=bool)
         if _sp and px_um and px_um > 0:
             from core.image_processor import draw_scale_bar as _dsb
             _kw = self._scale_bar_kwargs()
@@ -676,7 +698,7 @@ class MainWindow(QMainWindow):
                         self.current_raw_data, channel_names=ch_names,
                         enabled_channels=enabled,
                     )
-                PILImage.fromarray(merge).save(tp)
+                PILImage.fromarray(self._crop_image(merge)).save(tp)
                 files_to_open.append(tp)
 
             if open_mode in ("所有通道", "Merge + 所有通道"):
@@ -701,7 +723,7 @@ class MainWindow(QMainWindow):
                         )
                         from core.image_processor import apply_lut, _guess_color
                         img = apply_lut(ch2d, _guess_color(cn, ch))
-                    PILImage.fromarray(img).save(tp)
+                    PILImage.fromarray(self._crop_image(img)).save(tp)
                     files_to_open.append(tp)
 
         if not files_to_open:
@@ -765,6 +787,101 @@ class MainWindow(QMainWindow):
             self.controls.all_contrast(),
         )
 
+    def _on_drag_export_name_ready(self, name: str):
+        self.settings.sync()
+        if self.settings.value('drag_export_copy_name', False, type=bool):
+            QApplication.clipboard().setText(name)
+            _log(f'[drag_export] copied source name: {name}')
+
+    def _prepare_drag_files(self, key: str) -> list[str]:
+        """Materialize adjusted PNGs before the OS starts the external file drag."""
+        if key != self.current_filepath or self.current_raw_data is None:
+            return []
+        import re
+        import tempfile
+        import numpy as np
+        from PIL import Image
+        from core.image_processor import get_channel_display, _detect_nch
+
+        entry = self.file_index.get(key)
+        if not entry:
+            return []
+
+        def safe_name(value):
+            value = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', str(value))
+            return value.strip(' .')[:120] or 'image'
+
+        source = entry.get('filepath', key)
+        base = safe_name(Path(source).stem)
+        lif_idx = entry.get('lif_image_index', -1)
+        if lif_idx >= 0:
+            filename = entry.get('filename', '')
+            series = (filename.rsplit(' [', 1)[1].rstrip(']') if ' [' in filename
+                      else key.rsplit('::', 1)[-1] if '::' in key else f'Image{lif_idx}')
+            base = f'{base}-{safe_name(series)}'
+
+        directory = tempfile.TemporaryDirectory(prefix='microview_drag_')
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            nch = _detect_nch(self.current_raw_data)
+            names = entry.get('channel_names', [])
+            black = self.controls.all_black_points()
+            white = self.controls.all_white_points()
+            brightness = self.controls.all_brightness()
+            contrast = self.controls.all_contrast()
+            enabled = self.controls.all_enabled()
+            png_options = {}
+            if self.settings.value('drag_export_size_enabled', False, type=bool):
+                width_cm = max(0.01, self.settings.value('drag_export_width_cm', 5.0, type=float))
+                height_cm = max(0.01, self.settings.value('drag_export_height_cm', 5.0, type=float))
+                x0, y0, x1, y1 = self._crop_bounds(self.current_raw_data.shape[-2:], key)
+                width_px, height_px = x1 - x0, y1 - y0
+                if self.settings.value('drag_export_keep_aspect', True, type=bool):
+                    height_cm = width_cm * height_px / width_px
+                png_options['dpi'] = (width_px * 2.54 / width_cm, height_px * 2.54 / height_cm)
+            paths = []
+            used_names = {f'{base}_Merge.png'.casefold()}
+            merge = None
+            for ch in range(nch):
+                name = names[ch] if ch < len(names) else f'Ch{ch + 1}'
+                image = get_channel_display(
+                    self.current_raw_data, channel=ch, colored=True, channel_name=name,
+                    black_point=black[ch] if ch < len(black) else 0.0,
+                    white_point=white[ch] if ch < len(white) else 255.0,
+                    brightness=brightness[ch] if ch < len(brightness) else 0.0,
+                    contrast=contrast[ch] if ch < len(contrast) else 1.0,
+                )
+                if merge is None:
+                    merge = np.zeros_like(image)
+                if ch >= len(enabled) or enabled[ch]:
+                    np.maximum(merge, image, out=merge)
+                stem = f'{base}_{safe_name(name)}'
+                filename = f'{stem}.png'
+                suffix = 2
+                while filename.casefold() in used_names:
+                    filename = f'{stem}_{suffix}.png'
+                    suffix += 1
+                used_names.add(filename.casefold())
+                path = os.path.join(directory.name, filename)
+                Image.fromarray(self._prepare_export_image(image, entry, silent=True)).save(path, **png_options)
+                paths.append(path)
+            if merge is None:
+                directory.cleanup()
+                return []
+            merge_path = os.path.join(directory.name, f'{base}_Merge.png')
+            Image.fromarray(self._prepare_export_image(merge, entry, silent=True)).save(merge_path, **png_options)
+            # Keep files alive after the drop: Office may read them asynchronously.
+            self._drag_export_dirs.append(directory)
+            self._update_status(f'拖出 {nch} 个通道和 Merge')
+            return [merge_path] + paths
+        except Exception as error:
+            directory.cleanup()
+            _log(f'[drag_export] {error}')
+            self._update_status(f'拖出图片失败: {error}')
+            return []
+        finally:
+            QApplication.restoreOverrideCursor()
+
     def _export_file(self, filepath: str, lif_idx: int, out_folder: str, base_name: str = ""):
         """Export merge + channels for a single file to a folder."""
         from core.nd2_reader import read_pixels
@@ -777,18 +894,19 @@ class MainWindow(QMainWindow):
         else:
             raw = read_pixels(filepath)
 
-        entry = self.file_index.get(filepath, {})
+        entry = next((entry for entry in self.file_index.values()
+                      if entry.get('filepath') == filepath and entry.get('lif_image_index', -1) == lif_idx), {})
         ch_names = entry.get('channel_names', [])
         nch = _detect_nch(raw)
         base = base_name or os.path.splitext(os.path.basename(filepath))[0]
 
         merge = get_merge_display(raw)
-        Image.fromarray(merge).save(os.path.join(out_folder, f"{base}_Merge.png"))
+        Image.fromarray(self._prepare_export_image(merge, entry)).save(os.path.join(out_folder, f"{base}_Merge.png"))
 
         for ch in range(nch):
             cn = ch_names[ch] if ch < len(ch_names) else f"Ch{ch+1}"
             img = get_channel_display(raw, channel=ch, colored=True, channel_name=cn)
-            Image.fromarray(img).save(os.path.join(out_folder, f"{base}_{cn}.png"))
+            Image.fromarray(self._prepare_export_image(img, entry)).save(os.path.join(out_folder, f"{base}_{cn}.png"))
 
 
     def _on_export(self):
@@ -857,6 +975,53 @@ class MainWindow(QMainWindow):
             font_family=s.value("scalebar_font_family", "Times New Roman"),
         )
 
+    def _crop_bounds(self, shape, key):
+        height, width = shape[:2]
+        region = self._crop_regions.get(key)
+        if region is None:
+            return (0, 0, width, height)
+        x0, y0, x1, y1 = map(int, region)
+        x0, y0 = min(max(0, x0), width - 1), min(max(0, y0), height - 1)
+        return (x0, y0, max(x0 + 1, min(width, x1)), max(y0 + 1, min(height, y1)))
+
+    def _crop_image(self, image, key=None):
+        key = self.current_filepath if key is None else key
+        if key not in self._crop_regions:
+            return image
+        import numpy as np
+        x0, y0, x1, y1 = self._crop_bounds(image.shape, key)
+        # QImage requires packed rows, unlike a strided NumPy crop view.
+        return np.ascontiguousarray(image[y0:y1, x0:x1])
+
+    def _prepare_export_image(self, image, entry, silent=False):
+        key = entry.get('_idx_key')
+        if key is None:
+            key = next((key for key, value in self.file_index.items() if value is entry),
+                       entry.get('filepath', ''))
+        return self._apply_scale_bar(self._crop_image(image, key), entry, silent=silent)
+
+    def _on_crop_confirmed(self, region):
+        if self.current_filepath and self.current_raw_data is not None:
+            self._crop_regions[self.current_filepath] = tuple(region)
+            self.sidebar.set_cropped_files(self._crop_regions)
+            width, height = region[2] - region[0], region[3] - region[1]
+            self.settings.setValue('crop_default_width_px', width)
+            self.settings.setValue('crop_default_height_px', height)
+            self.viewer.set_default_crop_size((width, height))
+            self._display_all(preserve_view=False)
+            self._update_status(f'已裁剪当前视野: {region[2] - region[0]}×{region[3] - region[1]} 像素')
+
+    def _on_crop_cleared(self):
+        self._crop_regions.pop(self.current_filepath, None)
+        self.sidebar.set_cropped_files(self._crop_regions)
+        self._display_all(preserve_view=False)
+        self._update_status('已恢复当前图片的完整视野')
+
+    def _on_crop_editing_changed(self, editing):
+        self._render_timer.stop()
+        self._preserve_view_on_render = False
+        self._do_render()
+
     def _apply_scale_bar(self, img, entry, silent=False):
         """Apply scale bar to an export image if enabled in settings."""
         s = QSettings("MicroView", "MicroView")
@@ -887,7 +1052,7 @@ class MainWindow(QMainWindow):
                                 ch_brightness=cb, ch_contrast=cc,
                                 channel_names=ch_names,
                                 enabled_channels=enabled)
-        img = self._apply_scale_bar(img, entry)
+        img = self._prepare_export_image(img, entry)
         from PIL import Image
         os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
         Image.fromarray(img).save(filepath)
@@ -1103,7 +1268,7 @@ class MainWindow(QMainWindow):
                                           ch_brightness=br_vals, ch_contrast=ct_vals,
                                           channel_names=channel_names,
                                           enabled_channels=merge_enabled)
-                merge = self._apply_scale_bar(merge, entry)
+                merge = self._prepare_export_image(merge, entry)
                 Image.fromarray(merge).save(merge_path, format=fmt)
                 count += 1
 
@@ -1115,7 +1280,7 @@ class MainWindow(QMainWindow):
                                              white_point=wht_vals[ch] if ch < len(wht_vals) else 255.0,
                                              brightness=br_vals[ch] if ch < len(br_vals) else 0.0,
                                              contrast=ct_vals[ch] if ch < len(ct_vals) else 1.0)
-                ch_img = self._apply_scale_bar(ch_img, entry)
+                ch_img = self._prepare_export_image(ch_img, entry)
                 ch_path = os.path.join(folder, f"{base}_{ch_name}{ext}")
                 Image.fromarray(ch_img).save(ch_path, format=fmt)
                 count += 1
@@ -1507,7 +1672,7 @@ class MainWindow(QMainWindow):
                                                   ch_brightness=_br_vals, ch_contrast=_ct_vals,
                                                   channel_names=ch_names,
                                                   enabled_channels=merge_enabled)
-                        merge = self._apply_scale_bar(merge, entry)
+                        merge = self._prepare_export_image(merge, entry)
                         Image.fromarray(merge).save(merge_path, format=fmt)
                         exported.append(merge_path)
 
@@ -1522,7 +1687,7 @@ class MainWindow(QMainWindow):
                                                   white_point=_wht_vals[ch] if ch < len(_wht_vals) else 255.0,
                                                   brightness=_br_vals[ch] if ch < len(_br_vals) else 0.0,
                                                   contrast=_ct_vals[ch] if ch < len(_ct_vals) else 1.0)
-                        img = self._apply_scale_bar(img, entry)
+                        img = self._prepare_export_image(img, entry)
                         Image.fromarray(img).save(ch_path, format=fmt)
                         exported.append(ch_path)
                 except Exception as e:

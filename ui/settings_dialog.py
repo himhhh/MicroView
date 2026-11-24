@@ -39,7 +39,7 @@ def _resolve_app_path(fp):
 
 
 class ColorSettingsDialog(QDialog):
-    def __init__(self, dlg_colors_fn, parent=None):
+    def __init__(self, dlg_colors_fn, parent=None, image_size=None):
         super().__init__(parent)
         self._dlg_colors = dlg_colors_fn
         self.setWindowTitle("设置")
@@ -54,6 +54,7 @@ class ColorSettingsDialog(QDialog):
         self._lif_rows = []   # list of (QLineEdit, QComboBox, QHBoxLayout)
         self._px_um_from_file = 0.0
         self._settings = QSettings("MicroView", "MicroView")
+        self._drag_ratio = image_size[0] / image_size[1] if image_size and image_size[1] else 1.0
 
         # Scroll area
         scroll = QScrollArea(self)
@@ -202,6 +203,45 @@ class ColorSettingsDialog(QDialog):
         self._ij_mode_combo.currentIndexChanged.connect(_on_ij_mode)
         _on_ij_mode(0)
         layout.addWidget(ij_group)
+
+        drag_group = QGroupBox("拖动导出")
+        drag_group.setStyleSheet(
+            f"QGroupBox{{font-weight:600;color:{C[1]};background:{C[0]};"
+            f"border:1px solid {C[2]};border-radius:4px;padding-top:16px;}}")
+        drag_layout = QVBoxLayout(drag_group)
+        self._drag_size_cb = QCheckBox("自定义尺寸")
+        self._drag_aspect_cb = QCheckBox("锁定纵横比")
+        for checkbox in (self._drag_size_cb, self._drag_aspect_cb):
+            checkbox.setStyleSheet(f"color:{C[1]};")
+        toggles = QHBoxLayout()
+        toggles.addWidget(self._drag_size_cb)
+        toggles.addWidget(self._drag_aspect_cb)
+        toggles.addStretch()
+        drag_layout.addLayout(toggles)
+        dimensions = QHBoxLayout()
+        self._drag_width_sb = QDoubleSpinBox()
+        self._drag_height_sb = QDoubleSpinBox()
+        for label, spinbox in (("宽度:", self._drag_width_sb), ("高度:", self._drag_height_sb)):
+            spinbox.setRange(0.01, 1000.0)
+            spinbox.setDecimals(3)
+            spinbox.setSingleStep(0.1)
+            spinbox.setSuffix(" cm")
+            spinbox.setMinimumWidth(110)
+            spinbox.setStyleSheet(
+                f"QDoubleSpinBox{{background:{C[6]};color:{C[1]};border:1px solid {C[2]};"
+                f"border-radius:3px;padding:3px 6px;}}")
+            dimensions.addWidget(QLabel(label))
+            dimensions.addWidget(spinbox)
+        dimensions.addStretch()
+        drag_layout.addLayout(dimensions)
+        self._drag_copy_name_cb = QCheckBox("拖动导出后复制原图名称")
+        self._drag_copy_name_cb.setStyleSheet(f"color:{C[1]};")
+        drag_layout.addWidget(self._drag_copy_name_cb)
+        self._drag_size_cb.toggled.connect(self._set_drag_size_enabled)
+        self._drag_aspect_cb.toggled.connect(lambda _: self._sync_drag_dimensions())
+        self._drag_width_sb.valueChanged.connect(lambda _: self._sync_drag_dimensions('width'))
+        self._drag_height_sb.valueChanged.connect(lambda _: self._sync_drag_dimensions('height'))
+        layout.addWidget(drag_group)
 
         # ── Scale bar section ──
         sb_group = QGroupBox("导出比例尺")
@@ -503,6 +543,23 @@ class ColorSettingsDialog(QDialog):
             self._sb_px_override_sb.setValue(0.0)
             self._px_um_from_file = 0.0
 
+    def _set_drag_size_enabled(self, enabled):
+        for control in (self._drag_width_sb, self._drag_height_sb, self._drag_aspect_cb):
+            control.setEnabled(enabled)
+
+    def _sync_drag_dimensions(self, changed='width'):
+        if not self._drag_aspect_cb.isChecked():
+            return
+        width = (self._drag_height_sb.value() * self._drag_ratio
+                 if changed == 'height' else self._drag_width_sb.value())
+        width = max(max(0.01, 0.01 * self._drag_ratio),
+                    min(width, min(1000.0, 1000.0 * self._drag_ratio)))
+        for control, value in ((self._drag_width_sb, width),
+                               (self._drag_height_sb, width / self._drag_ratio)):
+            control.blockSignals(True)
+            control.setValue(value)
+            control.blockSignals(False)
+
     def _load(self):
         # ND2
         raw = self._settings.value("nd2_channel_colors")
@@ -562,6 +619,14 @@ class ColorSettingsDialog(QDialog):
         self._ij_adj_cb.setChecked(
             self._settings.value("imagej_apply_adjustments", True, type=bool))
 
+        self._drag_width_sb.setValue(self._settings.value('drag_export_width_cm', 5.0, type=float))
+        self._drag_height_sb.setValue(self._settings.value('drag_export_height_cm', 5.0, type=float))
+        self._drag_aspect_cb.setChecked(self._settings.value('drag_export_keep_aspect', True, type=bool))
+        self._sync_drag_dimensions()
+        self._drag_size_cb.setChecked(self._settings.value('drag_export_size_enabled', False, type=bool))
+        self._set_drag_size_enabled(self._drag_size_cb.isChecked())
+        self._drag_copy_name_cb.setChecked(self._settings.value('drag_export_copy_name', False, type=bool))
+
         # Scale bar
         self._sb_preview_cb.setChecked(
             self._settings.value("scalebar_preview", False, type=bool))
@@ -597,6 +662,11 @@ class ColorSettingsDialog(QDialog):
             self._sb_px_override_sb.setValue(ov)
 
     def _save_and_accept(self):
+        self._settings.setValue('drag_export_copy_name', self._drag_copy_name_cb.isChecked())
+        self._settings.setValue('drag_export_size_enabled', self._drag_size_cb.isChecked())
+        self._settings.setValue('drag_export_width_cm', self._drag_width_sb.value())
+        self._settings.setValue('drag_export_height_cm', self._drag_height_sb.value())
+        self._settings.setValue('drag_export_keep_aspect', self._drag_aspect_cb.isChecked())
         self._settings.setValue("nd2_channel_colors", json.dumps(
             {ed.text().strip(): _COLOR_NAMES[cb.currentIndex()]
              for ed, cb, _ in self._nd2_rows if ed.text().strip()}))
@@ -648,6 +718,9 @@ class ColorSettingsDialog(QDialog):
         self._settings.remove("lif_channel_colors")
 
         for k in ["imagej_path", "imagej_lif_mode", "imagej_apply_adjustments",
+                   "drag_export_size_enabled", "drag_export_width_cm",
+                   "drag_export_height_cm", "drag_export_keep_aspect",
+                   "drag_export_copy_name",
                    "scalebar_preview", "scalebar_export", "scalebar_color",
                    "scalebar_position", "scalebar_style", "scalebar_length_um",
                    "scalebar_thickness", "scalebar_font_size", "scalebar_show_label",
@@ -655,6 +728,12 @@ class ColorSettingsDialog(QDialog):
             self._settings.remove(k)
 
         self._ij_path_edit.clear()
+        self._drag_aspect_cb.setChecked(False)
+        self._drag_width_sb.setValue(5.0)
+        self._drag_height_sb.setValue(5.0)
+        self._drag_aspect_cb.setChecked(True)
+        self._drag_size_cb.setChecked(False)
+        self._drag_copy_name_cb.setChecked(False)
         self._ij_mode_combo.setCurrentIndex(0)
         self._ij_adj_cb.setChecked(True)
         self._sb_preview_cb.setChecked(False)
